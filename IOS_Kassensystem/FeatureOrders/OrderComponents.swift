@@ -7,7 +7,7 @@ struct OrderOverviewTabsView: View {
     @Namespace private var orderOverviewSelectionNamespace
 
     var body: some View {
-        let tabBarHeight: CGFloat = 46
+        let tabBarHeight: CGFloat = 44
 
         HStack(spacing: 0) {
             HStack(spacing: POSSpacing.xxs) {
@@ -15,7 +15,7 @@ struct OrderOverviewTabsView: View {
                 tabButton(tab: .ready, title: "Bereit", readyCount: readyCount)
             }
             .padding(.horizontal, POSSpacing.xs)
-            .padding(.vertical, POSSpacing.xs)
+            .padding(.vertical, POSSpacing.xxs)
             .frame(height: tabBarHeight)
         }
         .background(.ultraThinMaterial, in: RoundedRectangle(cornerRadius: POSRadius.innerCard + 2, style: .continuous))
@@ -88,11 +88,13 @@ struct OrderOverviewTabsView: View {
                     }
                 }
                 .padding(.horizontal, POSSpacing.md)
-                .padding(.vertical, POSSpacing.sm)
+                .padding(.vertical, POSSpacing.xs)
                 .frame(maxWidth: .infinity)
             }
-            .frame(height: 38)
+            .frame(height: 36)
+            .contentShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
         }
+        .frame(maxWidth: .infinity)
         .buttonStyle(.plain)
     }
 }
@@ -108,23 +110,27 @@ struct OrderCommandCenterView: View {
     let isBusy: Bool
 
     var body: some View {
+        let commandButtonHeight: CGFloat = 42
+
         HStack(spacing: POSSpacing.sm) {
             Button("Bestellen") { onSubmit() }
                 .buttonStyle(POSPrimaryButtonStyle())
+                .frame(height: commandButtonHeight)
                 .disabled(!canSubmitOrder)
 
             Button("+") { onIncrease() }
                 .buttonStyle(POSSecondaryButtonStyle())
-                .frame(width: 56)
+                .frame(width: 56, height: commandButtonHeight)
                 .disabled(!canAdjustQty || isBusy)
 
             Button("-") { onDecrease() }
                 .buttonStyle(POSSecondaryButtonStyle())
-                .frame(width: 56)
+                .frame(width: 56, height: commandButtonHeight)
                 .disabled(!canAdjustQty || isBusy)
 
             Button("Storno") { onStorno() }
                 .buttonStyle(POSSecondaryButtonStyle())
+                .frame(height: commandButtonHeight)
                 .disabled(!canStorno || isBusy)
         }
     }
@@ -282,15 +288,16 @@ struct OrderLineCardView: View {
 
 struct OrderTotalFooter: View {
     let totalGross: Double
+    let emphasizeAmount: Bool
 
     var body: some View {
         HStack {
             Text("Gesamt")
-                .font(POSTypography.titleMedium)
+                .font(emphasizeAmount ? .system(size: 30, weight: .semibold, design: .default) : POSTypography.titleMedium)
                 .foregroundStyle(POSColor.slate300)
             Spacer()
             Text(String(format: "%.2f EUR", locale: Locale(identifier: "de_DE"), totalGross))
-                .font(POSTypography.titleLarge)
+                .font(emphasizeAmount ? .system(size: 40, weight: .semibold, design: .default) : POSTypography.titleLarge)
                 .foregroundStyle(POSColor.slate050)
         }
         .padding(.vertical, POSSpacing.xs)

@@ -9,10 +9,12 @@ struct TablesScreenView: View {
     @State private var splitSelection: [String: Int] = [:]
     @State private var moveTargetId: Int?
     @State private var showSettingsDialog = false
+    @State private var scrollTopNavToTransferOnce = false
 
     var body: some View {
         GeometryReader { geo in
             let isTablet = geo.size.width >= 800
+            let isLargeTabletPortrait = isTablet && geo.size.height > geo.size.width
             let readyUnreadCountByTable = buildReadyUnreadCountByTable()
             let readyNoticesForSelectedTable = (store.kitchenReadyNoticesByTable[store.selectedTableId] ?? []).sorted {
                 if $0.createdAt == $1.createdAt {
@@ -61,6 +63,7 @@ struct TablesScreenView: View {
                                 withAnimation(.spring(response: 0.38, dampingFraction: 0.84)) {
                                     store.activeWorkTab = .transfer
                                 }
+                                scrollTopNavToTransferOnce = true
                             }
                         )
 
@@ -68,6 +71,7 @@ struct TablesScreenView: View {
                         OrdersWorkspaceView(
                             store: store,
                             isTablet: isTablet,
+                            isLargeTabletPortrait: isLargeTabletPortrait,
                             readyNoticeCount: readyNoticeCount,
                             readyNoticesForSelectedTable: readyNoticesForSelectedTable,
                             onProductTap: { productId in
@@ -211,12 +215,13 @@ struct TablesScreenView: View {
                     .padding(.vertical, POSSpacing.xs)
                     .frame(height: topNavHeight)
                 }
-                .onAppear {
-                    scrollTopNavigation(to: store.activeWorkTab, proxy: proxy, animated: false)
-                }
-                .onChange(of: store.activeWorkTab) { _, next in
+                .onChange(of: scrollTopNavToTransferOnce) { _, shouldScroll in
+                    guard shouldScroll else { return }
+                    withAnimation(.easeInOut(duration: 0.24)) {
+                        proxy.scrollTo(WorkTab.transfer, anchor: .trailing)
+                    }
                     DispatchQueue.main.async {
-                        scrollTopNavigation(to: next, proxy: proxy, animated: true)
+                        scrollTopNavToTransferOnce = false
                     }
                 }
             }
@@ -264,26 +269,6 @@ struct TablesScreenView: View {
                 .stroke(POSColor.slate700.opacity(0.28), lineWidth: 1)
         )
         .shadow(color: POSColor.indigo500.opacity(0.12), radius: 16, y: 7)
-    }
-
-    private func scrollTopNavigation(to tab: WorkTab, proxy: ScrollViewProxy, animated: Bool) {
-        let anchor: UnitPoint
-        switch tab {
-        case .transfer:
-            anchor = .trailing
-        case .split:
-            anchor = .center
-        default:
-            anchor = .leading
-        }
-
-        if animated {
-            withAnimation(.easeInOut(duration: 0.24)) {
-                proxy.scrollTo(tab, anchor: anchor)
-            }
-        } else {
-            proxy.scrollTo(tab, anchor: anchor)
-        }
     }
 
     private func buildReadyUnreadCountByTable() -> [Int: Int] {

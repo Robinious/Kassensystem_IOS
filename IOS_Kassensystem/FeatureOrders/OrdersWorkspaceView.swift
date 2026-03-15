@@ -3,6 +3,7 @@ import SwiftUI
 struct OrdersWorkspaceView: View {
     @ObservedObject var store: AppStore
     let isTablet: Bool
+    let isLargeTabletPortrait: Bool
     let readyNoticeCount: Int
     let readyNoticesForSelectedTable: [KitchenReadyNoticeUI]
     let onProductTap: (String) -> Void
@@ -47,11 +48,9 @@ struct OrdersWorkspaceView: View {
                             openGross: openGross
                         )
                         .frame(maxWidth: .infinity)
-                        .layoutPriority(2)
 
                         catalogPanel(visibleProducts: visibleProducts)
                             .frame(maxWidth: .infinity)
-                            .layoutPriority(1)
                     }
 
                     tabletOrderDock(
@@ -225,7 +224,7 @@ struct OrdersWorkspaceView: View {
                     }
                 }
 
-                OrderTotalFooter(totalGross: openGross)
+                OrderTotalFooter(totalGross: openGross, emphasizeAmount: isLargeTabletPortrait)
             } else {
                 ReadyNoticeListView(
                     tableId: store.selectedTableId,

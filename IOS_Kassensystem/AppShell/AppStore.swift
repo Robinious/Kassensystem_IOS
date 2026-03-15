@@ -1329,9 +1329,8 @@ final class AppStore: ObservableObject {
             let nextSelection: String?
             if let previousSelection, lists.contains(where: { $0.id == previousSelection }) {
                 nextSelection = previousSelection
-            } else if let first = lists.first {
-                nextSelection = first.id
             } else {
+                // Default to "Alle" (nil) if there is no valid previous selection.
                 nextSelection = nil
             }
 
