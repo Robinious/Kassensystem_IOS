@@ -60,18 +60,39 @@ struct LoginView: View {
     }
 
     private var statusHeader: some View {
-        HStack {
+        ZStack {
+            HStack {
+                Button {
+                    store.returnToPairing()
+                } label: {
+                    HStack(spacing: POSSpacing.xxs) {
+                        Image(systemName: "chevron.left")
+                            .font(.system(size: 12, weight: .semibold))
+                        Text("Zurück")
+                            .font(POSTypography.labelLarge)
+                    }
+                    .foregroundStyle(POSColor.slate050)
+                    .padding(.horizontal, POSSpacing.md)
+                    .padding(.vertical, POSSpacing.xs)
+                    .background(POSColor.slate800.opacity(0.78))
+                    .clipShape(Capsule())
+                }
+                .buttonStyle(.plain)
+
+                Spacer()
+
+                Text(store.isOnline ? "Online" : "Offline")
+                    .font(POSTypography.labelLarge)
+                    .foregroundStyle(store.isOnline ? POSColor.slate050 : Color.white)
+                    .padding(.horizontal, POSSpacing.lg)
+                    .padding(.vertical, POSSpacing.xs)
+                    .background(store.isOnline ? POSColor.slate800.opacity(0.7) : POSColor.red500.opacity(0.78))
+                    .clipShape(Capsule())
+            }
+
             Text("Kassensystem Mobile")
                 .font(POSTypography.titleMedium)
                 .foregroundStyle(POSColor.slate050)
-            Spacer()
-            Text(store.isOnline ? "Online" : "Offline")
-                .font(POSTypography.labelLarge)
-                .foregroundStyle(store.isOnline ? POSColor.slate050 : Color.white)
-                .padding(.horizontal, POSSpacing.lg)
-                .padding(.vertical, POSSpacing.xs)
-                .background(store.isOnline ? POSColor.slate800.opacity(0.7) : POSColor.red500.opacity(0.78))
-                .clipShape(Capsule())
         }
         .padding(POSSpacing.md)
         .frame(maxWidth: 640)

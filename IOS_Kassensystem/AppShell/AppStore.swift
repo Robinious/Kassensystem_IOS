@@ -229,8 +229,8 @@ final class AppStore: ObservableObject {
         }
 
         let hasEndpointInQr = (parsed?.host?.isEmpty == false) && parsed?.port != nil
-        let nextHost = (parsed?.host?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? parsed?.host : hostAddress) ?? hostAddress
-        let nextPort = parsed?.port ?? hostPort
+        let nextHost = hasEndpointInQr ? (parsed?.host ?? hostAddress) : hostAddress
+        let nextPort = hasEndpointInQr ? (parsed?.port ?? hostPort) : hostPort
 
         if hasEndpointInQr {
             endpoint = CoreEndpoint(host: nextHost, port: nextPort)
@@ -356,6 +356,11 @@ final class AppStore: ObservableObject {
         localStore.clearPendingPaymentKeys()
 
         noticeMessage = "Abgemeldet."
+    }
+
+    func returnToPairing() {
+        guard !isBusy else { return }
+        route = .pairing
     }
 
     func requestQuickSync(includeCatalog: Bool = false, force: Bool = false) {
@@ -1756,15 +1761,38 @@ final class AppStore: ObservableObject {
 
         if let data = trimmed.data(using: .utf8),
            let rawJson = try? JSONSerialization.jsonObject(with: data) as? [String: Any] {
-            let protocolValue = (rawJson["protocol"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-            let host = (rawJson["host"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
-            let port = rawJson["port"] as? Int
-            let pairingCode = (rawJson["pairingCode"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
-            let expiresAt = rawJson["expiresAt"] as? Int64
-
-            if protocolValue == "kasse-core-pairing.v1", let pairingCode, !pairingCode.isEmpty {
-                return PairingQrScanPayload(host: host, port: port, pairingCode: pairingCode, expiresAt: expiresAt)
+            let protocolValue = readString(rawJson, keys: ["protocol"])?.lowercased()
+            guard protocolValue == "kasse-core-pairing.v1" else {
+                return nil
             }
+
+            guard let pairingCodeRaw = readString(rawJson, keys: ["pairingCode", "pairing_code", "code"]) else {
+                return nil
+            }
+            let pairingCode = pairingCodeRaw.uppercased()
+            guard !pairingCode.isEmpty else {
+                return nil
+            }
+
+            let hostDirect = readString(rawJson, keys: ["host", "ipAddress", "coreApiHost"])
+            let portDirect = readPort(rawJson, keys: ["port", "coreApiPort"])
+            let urlFallback = readHostAndPortFromBaseUrl(rawJson, keys: ["coreApiBaseUrl", "baseUrl", "coreApiUrl"])
+
+            if hasAnyKey(rawJson, keys: ["port", "coreApiPort"]),
+               portDirect == nil {
+                return nil
+            }
+
+            let host = normalizeHost(hostDirect ?? urlFallback.host)
+            let port = normalizePort(portDirect ?? urlFallback.port)
+            let expiresAt = readInt64(rawJson, keys: ["expiresAt", "expires_at"])
+
+            return PairingQrScanPayload(
+                host: host,
+                port: port,
+                pairingCode: pairingCode,
+                expiresAt: expiresAt
+            )
         }
 
         let fallback = trimmed.uppercased().filter { $0.isLetter || $0.isNumber }
@@ -1772,6 +1800,116 @@ final class AppStore: ObservableObject {
             return PairingQrScanPayload(host: nil, port: nil, pairingCode: fallback, expiresAt: nil)
         }
         return nil
+    }
+
+    private func hasAnyKey(_ json: [String: Any], keys: [String]) -> Bool {
+        keys.contains { json[$0] != nil }
+    }
+
+    private func readString(_ json: [String: Any], keys: [String]) -> String? {
+        for key in keys {
+            guard let value = json[key] else { continue }
+            if let text = value as? String {
+                let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !trimmed.isEmpty {
+                    return trimmed
+                }
+                continue
+            }
+            if let number = value as? NSNumber {
+                let text = number.stringValue.trimmingCharacters(in: .whitespacesAndNewlines)
+                if !text.isEmpty {
+                    return text
+                }
+            }
+        }
+        return nil
+    }
+
+    private func readPort(_ json: [String: Any], keys: [String]) -> Int? {
+        for key in keys {
+            guard let value = json[key] else { continue }
+            if let portInt = value as? Int {
+                return normalizePort(portInt)
+            }
+            if let portString = value as? String,
+               let portInt = Int(portString.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return normalizePort(portInt)
+            }
+            if let number = value as? NSNumber {
+                return normalizePort(number.intValue)
+            }
+        }
+        return nil
+    }
+
+    private func readInt64(_ json: [String: Any], keys: [String]) -> Int64? {
+        for key in keys {
+            guard let value = json[key] else { continue }
+            if let int64 = value as? Int64 {
+                return int64
+            }
+            if let intValue = value as? Int {
+                return Int64(intValue)
+            }
+            if let text = value as? String,
+               let intValue = Int64(text.trimmingCharacters(in: .whitespacesAndNewlines)) {
+                return intValue
+            }
+            if let number = value as? NSNumber {
+                return number.int64Value
+            }
+        }
+        return nil
+    }
+
+    private func readHostAndPortFromBaseUrl(_ json: [String: Any], keys: [String]) -> (host: String?, port: Int?) {
+        for key in keys {
+            guard let raw = readString(json, keys: [key]) else { continue }
+            if let extracted = parseHostAndPortFromUrlString(raw) {
+                return extracted
+            }
+        }
+        return (host: nil, port: nil)
+    }
+
+    private func parseHostAndPortFromUrlString(_ raw: String) -> (host: String?, port: Int?)? {
+        let trimmed = raw.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else {
+            return nil
+        }
+
+        let valueWithScheme: String
+        if trimmed.contains("://") {
+            valueWithScheme = trimmed
+        } else {
+            valueWithScheme = "http://\(trimmed)"
+        }
+
+        guard let components = URLComponents(string: valueWithScheme) else {
+            return nil
+        }
+
+        let host = normalizeHost(components.host)
+        let port = normalizePort(components.port)
+        if host == nil, port == nil {
+            return nil
+        }
+        return (host: host, port: port)
+    }
+
+    private func normalizeHost(_ value: String?) -> String? {
+        guard let value else { return nil }
+        let trimmed = value.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.isEmpty else { return nil }
+        return trimmed
+    }
+
+    private func normalizePort(_ value: Int?) -> Int? {
+        guard let value, (1...65535).contains(value) else {
+            return nil
+        }
+        return value
     }
 
     private func readTableIdFromPayload(_ payload: [String: JSONValue]) -> Int? {

@@ -7,6 +7,7 @@ struct PairingView: View {
     @State private var portInput: String = ""
     @State private var pairCodeInput: String = ""
     @State private var qrPayloadInput: String = ""
+    @State private var isQrScannerPresented = false
 
     var body: some View {
         ScrollView {
@@ -51,11 +52,7 @@ struct PairingView: View {
 
                         HStack(spacing: POSSpacing.sm) {
                             Button("QR scannen") {
-                                if !qrPayloadInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                                    store.scanAndPairFromQrPayload(qrPayloadInput)
-                                } else {
-                                    noticeHint("QR-Scanner folgt. Nutze bis dahin QR Payload oder Code.")
-                                }
+                                isQrScannerPresented = true
                             }
                             .buttonStyle(POSPrimaryButtonStyle())
                             .disabled(store.isBusy)
@@ -100,7 +97,7 @@ struct PairingView: View {
                 card {
                     VStack(alignment: .leading, spacing: POSSpacing.sm) {
                         fieldset(title: "Host") {
-                            TextField("192.168.1.151", text: $hostInput)
+                            TextField("Core-Host", text: $hostInput)
                                 .foregroundStyle(POSColor.slate050)
                         }
 
@@ -134,6 +131,21 @@ struct PairingView: View {
             hostInput = store.hostAddress
             portInput = String(store.hostPort)
             pairCodeInput = store.pairCodeInput
+        }
+        .sheet(isPresented: $isQrScannerPresented) {
+            PairingQrScannerSheet(
+                onScannedCode: { scannedCode in
+                    isQrScannerPresented = false
+                    store.scanAndPairFromQrPayload(scannedCode)
+                },
+                onCancel: {
+                    isQrScannerPresented = false
+                },
+                onFailure: { message in
+                    isQrScannerPresented = false
+                    noticeHint(message)
+                }
+            )
         }
     }
 
