@@ -44,9 +44,16 @@ enum POSSpacing {
 }
 
 enum POSMotion {
-    static let quick = Animation.easeInOut(duration: 0.16)
-    static let pulse = Animation.easeInOut(duration: 0.18)
-    static let panel = Animation.easeInOut(duration: 0.22)
+    static let tap = Animation.easeInOut(duration: 0.14)
+    static let quick = tap
+
+    static let select = Animation.spring(response: 0.34, dampingFraction: 0.82, blendDuration: 0.08)
+    static let panel = Animation.spring(response: 0.38, dampingFraction: 0.86, blendDuration: 0.06)
+    static let overlay = Animation.spring(response: 0.30, dampingFraction: 0.86, blendDuration: 0.06)
+    static let dragHover = Animation.spring(response: 0.24, dampingFraction: 0.8, blendDuration: 0.06)
+    static let dragDrop = Animation.spring(response: 0.2, dampingFraction: 0.7, blendDuration: 0.06)
+    static let feedback = Animation.easeInOut(duration: 0.2)
+    static let pulse = Animation.easeInOut(duration: 0.2)
 }
 
 enum POSTypography {

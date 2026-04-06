@@ -5,6 +5,8 @@ import Combine
 
 @MainActor
 final class AppStore: ObservableObject {
+    private let featureKeySchlemmerBlockModule = "schlemmer_block_module"
+
     private struct PairingQrScanPayload {
         let host: String?
         let port: Int?
@@ -29,7 +31,11 @@ final class AppStore: ObservableObject {
         "/api/core/v1/commands/orders/transfer-items",
         "/api/core/v1/commands/orders/cancel-ordered-line",
         "/api/core/v1/commands/payments/finalize",
-        "/api/core/v1/commands/payments/finalize-split"
+        "/api/core/v1/commands/payments/finalize-split",
+        "/api/core/v1/commands/vouchers/apply",
+        "/api/core/v1/commands/vouchers/remove",
+        "/api/core/v1/commands/vouchers/schlemmer-preview",
+        "/api/core/v1/commands/vouchers/schlemmer-apply"
     ]
 
     private let localStore: LocalStore
@@ -48,11 +54,13 @@ final class AppStore: ObservableObject {
     private var latestOrderStore: OrderStoreDTO?
     private var latestPlanner: PlannerData?
     private var latestTableLocks: [String: TableLockDTO] = [:]
+    private var schlemmerPreviewRequestGeneration: UInt64 = 0
 
     private var syncCursor: Int64
     private var kitchenNoticeCursor: Int64
     private var seenReadyEventIdsOrder: [String]
     private var seenReadyEventIdsSet: Set<String>
+    private var seenReadyEventIdsDirty = false
 
     private var autoSyncTask: Task<Void, Never>?
     private var autoSyncStarted = false
@@ -86,6 +94,8 @@ final class AppStore: ObservableObject {
     @Published var isPaired: Bool = false
     @Published var isAuthenticated: Bool = false
     @Published var activeUserId: String?
+    @Published var activeUserDisplayName: String?
+    @Published var isSchlemmerBlockModuleEnabled: Bool = false
 
     @Published var offlineQueueCount: Int = 0
 
@@ -93,10 +103,25 @@ final class AppStore: ObservableObject {
     @Published var currentOrderCode: String = ""
     @Published var currentOrderLines: [OrderLineUI] = []
     @Published var tableOrderLinesByTableId: [Int: [OrderLineUI]] = [:]
+    @Published var currentAppliedVouchers: [AppliedVoucherUI] = []
+    @Published var appliedVouchersByTableId: [Int: [AppliedVoucherUI]] = [:]
     @Published var kitchenReadyNoticesByTable: [Int: [KitchenReadyNoticeUI]] = [:]
     @Published var kitchenReadyLastSeenCursorByTable: [Int: Int64]
     @Published var orderOverviewTab: OrderOverviewTab = .orders
     @Published var selectedOrderLineId: String?
+    @Published var voucherCodeInput: String = ""
+
+    @Published var schlemmerType: SchlemmerBlockTypeUI = .twoForOne
+    @Published var schlemmerEligibleLines: [SchlemmerEligibleLineUI] = []
+    @Published var schlemmerSelection: [String: Int] = [:]
+    @Published var schlemmerAutoSelection: [String: Int] = [:]
+    @Published var schlemmerRequiredFoodUnits: Int = 0
+    @Published var schlemmerAvailableUnits: Int = 0
+    @Published var schlemmerRequiredSelectionCount: Int = 0
+    @Published var schlemmerSelectedUnits: Int = 0
+    @Published var schlemmerLastErrorCode: String?
+    @Published var schlemmerPreviewInFlight: Bool = false
+    @Published var schlemmerPreviewShowLoader: Bool = false
 
     @Published var catalogGroups: [CatalogGroupUI] = []
     @Published var selectedCatalogGroupId: String?
@@ -113,36 +138,46 @@ final class AppStore: ObservableObject {
 
     @Published var noticeMessage: String?
 
-    init(localStore: LocalStore = LocalStore()) {
-        self.localStore = localStore
+    var visibleWorkTabs: [WorkTab] {
+        var tabs: [WorkTab] = [.tables, .orders, .payment, .split, .transfer, .voucher]
+        if isSchlemmerBlockModuleEnabled {
+            tabs.append(.schlemmer)
+        }
+        return tabs
+    }
 
-        let endpoint = localStore.loadEndpoint()
+    init(localStore: LocalStore? = nil) {
+        let resolvedLocalStore = localStore ?? LocalStore()
+        self.localStore = resolvedLocalStore
+
+        let endpoint = resolvedLocalStore.loadEndpoint()
         self.endpoint = endpoint
-        self.coreApiToken = localStore.loadCoreApiToken()
-        self.sessionToken = localStore.loadSessionToken()
+        self.coreApiToken = resolvedLocalStore.loadCoreApiToken()
+        self.sessionToken = resolvedLocalStore.loadSessionToken()
 
-        self.isDarkMode = localStore.loadDarkMode()
-        self.showVatOnProductTiles = localStore.loadShowVatOnProductTiles()
-        self.showFullProductText = localStore.loadShowFullProductText()
-        self.showPriceOnProductTiles = localStore.loadShowPriceOnProductTiles()
-        self.printStornoInfoEnabled = localStore.loadPrintStornoInfoEnabled()
+        self.isDarkMode = resolvedLocalStore.loadDarkMode()
+        self.showVatOnProductTiles = resolvedLocalStore.loadShowVatOnProductTiles()
+        self.showFullProductText = resolvedLocalStore.loadShowFullProductText()
+        self.showPriceOnProductTiles = resolvedLocalStore.loadShowPriceOnProductTiles()
+        self.printStornoInfoEnabled = resolvedLocalStore.loadPrintStornoInfoEnabled()
 
         self.hostAddress = endpoint.host
         self.hostPort = endpoint.port
 
-        self.syncCursor = localStore.loadSyncCursor()
-        self.kitchenNoticeCursor = localStore.loadKitchenNoticeCursor()
+        self.syncCursor = resolvedLocalStore.loadSyncCursor()
+        self.kitchenNoticeCursor = resolvedLocalStore.loadKitchenNoticeCursor()
 
-        let seenIds = localStore.loadSeenReadyEventIds()
+        let seenIds = resolvedLocalStore.loadSeenReadyEventIds()
         self.seenReadyEventIdsOrder = seenIds
         self.seenReadyEventIdsSet = Set(seenIds)
 
-        self.kitchenReadyLastSeenCursorByTable = localStore.loadReadyLastSeenCursorByTable()
+        self.kitchenReadyLastSeenCursorByTable = resolvedLocalStore.loadReadyLastSeenCursorByTable()
 
-        self.pendingSubmitOrderIdempotencyKeysByTableId = localStore.loadPendingSubmitOrderKeys()
-        self.pendingPaymentIdempotencyKeysByScope = localStore.loadPendingPaymentKeys()
+        self.pendingSubmitOrderIdempotencyKeysByTableId = resolvedLocalStore.loadPendingSubmitOrderKeys()
+        self.pendingPaymentIdempotencyKeysByScope = resolvedLocalStore.loadPendingPaymentKeys()
+        self.selectedTableId = resolvedLocalStore.loadSelectedTableId(userId: nil, defaultValue: 1)
 
-        if localStore.loadDeviceCredentials() != nil {
+        if resolvedLocalStore.loadDeviceCredentials() != nil {
             isPaired = true
             route = sessionToken.isEmpty ? .login : .tables
         } else {
@@ -153,6 +188,7 @@ final class AppStore: ObservableObject {
     func start() {
         Task {
             await refreshCoreConnectivity()
+            await refreshFeatureFlagsFromCoreInternal()
             await refreshCatalogFromCoreInternal()
             await refreshSession()
             await refreshTablesFromCoreInternal()
@@ -189,6 +225,7 @@ final class AppStore: ObservableObject {
 
         Task {
             await refreshCoreConnectivity()
+            await refreshFeatureFlagsFromCoreInternal()
             await refreshCatalogFromCoreInternal()
             await refreshTablesFromCoreInternal()
         }
@@ -288,7 +325,8 @@ final class AppStore: ObservableObject {
                 pairCodeInput = code
                 pairedDeviceLabel = device.deviceName ?? "Service iOS"
                 pairedDeviceId = device.deviceId
-                route = .login
+                await refreshFeatureFlagsFromCoreInternal()
+                setRoute(.login)
                 noticeMessage = "Gerät erfolgreich gekoppelt."
             } catch {
                 noticeMessage = "Pairing fehlgeschlagen: \(error.localizedDescription)"
@@ -307,7 +345,7 @@ final class AppStore: ObservableObject {
 
         guard let creds = localStore.loadDeviceCredentials() else {
             noticeMessage = "Gerät ist nicht gekoppelt."
-            route = .pairing
+            setRoute(.pairing)
             return
         }
 
@@ -329,11 +367,15 @@ final class AppStore: ObservableObject {
                 sessionToken = session.token?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
                 localStore.saveSessionToken(sessionToken)
                 isAuthenticated = !sessionToken.isEmpty
-                activeUserId = response.user?.id
-                route = isAuthenticated ? .tables : .login
+                let resolvedUserId = (response.user?.id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? normalizedUserId)
+                activeUserId = resolvedUserId.isEmpty ? nil : resolvedUserId
+                activeUserDisplayName = resolveUserDisplayName(user: response.user, fallbackUserId: activeUserId ?? normalizedUserId)
+                selectedTableId = localStore.loadSelectedTableId(userId: activeUserId, defaultValue: selectedTableId)
+                setRoute(isAuthenticated ? .tables : .login)
                 noticeMessage = isAuthenticated ? "Anmeldung erfolgreich." : "Login fehlgeschlagen."
 
                 await refreshCoreConnectivity()
+                await refreshFeatureFlagsFromCoreInternal()
                 await refreshCatalogFromCoreInternal()
                 await refreshTablesFromCoreInternal()
             } catch {
@@ -347,7 +389,8 @@ final class AppStore: ObservableObject {
         sessionToken = ""
         isAuthenticated = false
         activeUserId = nil
-        route = isPaired ? .login : .pairing
+        activeUserDisplayName = nil
+        setRoute(isPaired ? .login : .pairing)
         resetEventFeedCursors(clearKitchenNotices: true)
 
         pendingSubmitOrderIdempotencyKeysByTableId.removeAll()
@@ -360,7 +403,7 @@ final class AppStore: ObservableObject {
 
     func returnToPairing() {
         guard !isBusy else { return }
-        route = .pairing
+        setRoute(.pairing)
     }
 
     func requestQuickSync(includeCatalog: Bool = false, force: Bool = false) {
@@ -436,30 +479,41 @@ final class AppStore: ObservableObject {
             return
         }
 
-        if !isOnline {
-            let snapshot = extractCurrentOrderFromStore(latestOrderStore, tableId: tableId)
-            selectedTableId = tableId
-            currentOrderLines = snapshot.lines
-            currentOrderCode = snapshot.code
-            selectedOrderLineId = nil
-            noticeMessage = "Offline: nur lokaler Wechsel."
-            activeWorkTab = .orders
-            return
+        let snapshot = extractCurrentOrderFromStore(latestOrderStore, tableId: tableId)
+        selectedTableId = tableId
+        currentOrderLines = snapshot.lines
+        currentOrderCode = snapshot.code
+        currentAppliedVouchers = snapshot.appliedVouchers
+        voucherCodeInput = ""
+        selectedOrderLineId = nil
+        activeWorkTab = .orders
+        localStore.saveSelectedTableId(tableId, userId: activeUserId)
+
+        if isSchlemmerBlockModuleEnabled {
+            // Avoid carrying stale Schlemmer selection across tables.
+            schlemmerEligibleLines = []
+            schlemmerSelection = [:]
+            schlemmerAutoSelection = [:]
+            schlemmerRequiredFoodUnits = 0
+            schlemmerAvailableUnits = 0
+            schlemmerRequiredSelectionCount = 0
+            schlemmerSelectedUnits = 0
+            schlemmerLastErrorCode = nil
+            schlemmerPreviewInFlight = false
+            schlemmerPreviewShowLoader = false
+
+            if isOnline {
+                // Lock selection immediately so stale taps cannot race the pending preview refresh.
+                schlemmerPreviewInFlight = true
+                schlemmerPreviewShowLoader = false
+                Task {
+                    await refreshSchlemmerPreviewInternal(silent: true, lockInteraction: true)
+                }
+            }
         }
 
-        Task {
-            do {
-                let result = try await repository.switchTable(nextTableId: String(tableId))
-                if result.success, result.result?.ok == true {
-                    activeWorkTab = .orders
-                    await refreshTablesFromCoreInternal(noticeOnSuccess: "Tisch gewechselt.")
-                } else {
-                    let error = result.result?.error ?? result.error ?? "SWITCH_FAILED"
-                    noticeMessage = "Tischwechsel fehlgeschlagen: \(error)"
-                }
-            } catch {
-                noticeMessage = "Tischwechsel fehlgeschlagen: \(error.localizedDescription)"
-            }
+        if !isOnline {
+            noticeMessage = "Offline: nur lokaler Wechsel."
         }
     }
 
@@ -497,7 +551,11 @@ final class AppStore: ObservableObject {
                     is_blocked_flag: nil,
                     blocked: nil,
                     blockReason: product.blockReason,
-                    block_reason: nil
+                    block_reason: nil,
+                    basePrice: product.regularPrice,
+                    promoEnabled: product.promoEnabled,
+                    promoApplied: product.promoActive,
+                    promoPrice: product.promoActive ? product.promoPrice : nil
                 )
                 let result = try await repository.addLine(tableId: String(selectedTableId), product: dto)
                 if result.success, result.result?.ok == true {
@@ -666,7 +724,10 @@ final class AppStore: ObservableObject {
                     is_blocked_flag: nil,
                     blocked: nil,
                     blockReason: nil,
-                    block_reason: nil
+                    block_reason: nil,
+                    basePrice: line.basePrice,
+                    promoApplied: line.promoApplied,
+                    promoPrice: line.promoPrice
                 )
                 let result = try await repository.addLine(tableId: String(selectedTableId), product: dto)
 
@@ -904,6 +965,171 @@ final class AppStore: ObservableObject {
         }
     }
 
+    func setVoucherCodeInput(_ value: String) {
+        voucherCodeInput = value.uppercased()
+    }
+
+    func applyVoucherCode() {
+        let code = voucherCodeInput.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !code.isEmpty else {
+            noticeMessage = "Bitte Gutscheincode eingeben."
+            return
+        }
+        guard isOnline else {
+            noticeMessage = "Gutschein nur online verfügbar."
+            return
+        }
+        guard !isBusy else { return }
+
+        isBusy = true
+        Task {
+            defer { isBusy = false }
+            do {
+                let result = try await repository.applyVoucher(tableId: String(selectedTableId), code: code)
+                if result.success, result.result?.ok == true {
+                    voucherCodeInput = ""
+                    let applied = applyCommandStoreSnapshot(response: result, noticeOnSuccess: "Gutschein erfolgreich eingelöst.")
+                    if !applied {
+                        await refreshTablesFromCoreInternal(noticeOnSuccess: "Gutschein erfolgreich eingelöst.")
+                    }
+                    if activeWorkTab == .schlemmer {
+                        await refreshSchlemmerPreviewInternal()
+                    }
+                } else {
+                    let errorCode = result.result?.error ?? result.error ?? "VOUCHER_APPLY_FAILED"
+                    noticeMessage = describeVoucherError(errorCode)
+                }
+            } catch {
+                noticeMessage = describeVoucherError((error as? CoreClientError)?.errorCode ?? error.localizedDescription)
+            }
+        }
+    }
+
+    func removeVoucherCode(_ code: String) {
+        let normalized = code.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        guard !normalized.isEmpty else { return }
+        guard isOnline else {
+            noticeMessage = "Gutschein nur online verfügbar."
+            return
+        }
+        guard !isBusy else { return }
+
+        isBusy = true
+        Task {
+            defer { isBusy = false }
+            do {
+                let result = try await repository.removeVoucher(tableId: String(selectedTableId), code: normalized)
+                if result.success, result.result?.ok == true {
+                    let applied = applyCommandStoreSnapshot(response: result, noticeOnSuccess: "Gutschein entfernt.")
+                    if !applied {
+                        await refreshTablesFromCoreInternal(noticeOnSuccess: "Gutschein entfernt.")
+                    }
+                    if activeWorkTab == .schlemmer {
+                        await refreshSchlemmerPreviewInternal()
+                    }
+                } else {
+                    let errorCode = result.result?.error ?? result.error ?? "VOUCHER_REMOVE_FAILED"
+                    noticeMessage = describeVoucherError(errorCode)
+                }
+            } catch {
+                noticeMessage = describeVoucherError((error as? CoreClientError)?.errorCode ?? error.localizedDescription)
+            }
+        }
+    }
+
+    func selectSchlemmerType(_ type: SchlemmerBlockTypeUI) {
+        guard schlemmerType != type else { return }
+        schlemmerType = type
+        schlemmerSelection = [:]
+        schlemmerAutoSelection = [:]
+        schlemmerSelectedUnits = 0
+        schlemmerPreviewInFlight = true
+        schlemmerPreviewShowLoader = true
+        Task {
+            await refreshSchlemmerPreviewInternal()
+        }
+    }
+
+    func setSchlemmerSelection(lineId: String, qty: Int) {
+        guard !schlemmerPreviewInFlight, !isBusy else { return }
+        let normalizedLineId = lineId.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !normalizedLineId.isEmpty else { return }
+        let maxForLine = schlemmerEligibleLines.first(where: { $0.lineId == normalizedLineId })?.qty ?? 0
+        let nextQty = min(max(0, qty), maxForLine)
+        if nextQty <= 0 {
+            schlemmerSelection.removeValue(forKey: normalizedLineId)
+        } else {
+            schlemmerSelection[normalizedLineId] = nextQty
+        }
+        schlemmerSelectedUnits = schlemmerSelection.values.reduce(0, +)
+    }
+
+    func applySchlemmerSelection() {
+        guard isSchlemmerBlockModuleEnabled else {
+            noticeMessage = "Schlemmer Block Modul ist nicht aktiv."
+            return
+        }
+        guard isOnline else {
+            noticeMessage = "Schlemmer Block nur online verfügbar."
+            return
+        }
+        guard !isBusy, !schlemmerPreviewInFlight else { return }
+
+        let minimumFoodUnits = schlemmerMinimumFoodUnits(for: schlemmerType)
+        if minimumFoodUnits > 0, schlemmerAvailableUnits < minimumFoodUnits {
+            noticeMessage = schlemmerInsufficientItemsMessage(for: schlemmerType)
+            return
+        }
+
+        let compactSelection = schlemmerSelection
+            .mapValues { max(0, $0) }
+            .filter { !$0.key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty && $0.value > 0 }
+
+        guard !compactSelection.isEmpty else {
+            noticeMessage = "Bitte Auswahl für Schlemmer Block treffen."
+            return
+        }
+        if schlemmerRequiredSelectionCount > 0 && schlemmerSelectedUnits != schlemmerRequiredSelectionCount {
+            noticeMessage = "Auswahl unvollständig: \(schlemmerSelectedUnits)/\(schlemmerRequiredSelectionCount)."
+            return
+        }
+
+        isBusy = true
+        Task {
+            defer { isBusy = false }
+            do {
+                let result = try await repository.applySchlemmer(
+                    tableId: String(selectedTableId),
+                    type: schlemmerType.coreValue,
+                    selection: compactSelection
+                )
+                if result.success, result.result?.ok == true {
+                    let applied = applyCommandStoreSnapshot(response: result, noticeOnSuccess: "Schlemmer Block erfolgreich angewendet.")
+                    if !applied {
+                        await refreshTablesFromCoreInternal(noticeOnSuccess: "Schlemmer Block erfolgreich angewendet.")
+                    }
+                    await refreshSchlemmerPreviewInternal()
+                } else {
+                    let errorCode = result.result?.error ?? result.error ?? "SCHLEMMER_APPLY_FAILED"
+                    schlemmerLastErrorCode = errorCode
+                    noticeMessage = describeSchlemmerError(errorCode)
+                }
+            } catch {
+                let errorCode = (error as? CoreClientError)?.errorCode ?? error.localizedDescription
+                schlemmerLastErrorCode = errorCode
+                noticeMessage = describeSchlemmerError(errorCode)
+            }
+        }
+    }
+
+    func refreshSchlemmerPreview() {
+        schlemmerPreviewInFlight = true
+        schlemmerPreviewShowLoader = true
+        Task {
+            await refreshSchlemmerPreviewInternal()
+        }
+    }
+
     func onTransferSelectionTap(sourceTableId: Int, targetTableId: Int, selectionByLineId: [String: Int]) {
         if !isOnline {
             enqueueOfflineAction()
@@ -1041,6 +1267,7 @@ final class AppStore: ObservableObject {
         }
 
         await pollKitchenReadyNoticesOptional()
+        persistSeenReadyEventIdsIfNeeded()
 
         if shouldRefreshCatalog {
             await refreshCatalogFromCoreInternal()
@@ -1206,8 +1433,14 @@ final class AppStore: ObservableObject {
             seenReadyEventIdsSet.remove(removed)
         }
 
-        localStore.saveSeenReadyEventIds(seenReadyEventIdsOrder)
+        seenReadyEventIdsDirty = true
         return true
+    }
+
+    private func persistSeenReadyEventIdsIfNeeded() {
+        guard seenReadyEventIdsDirty else { return }
+        localStore.saveSeenReadyEventIds(seenReadyEventIdsOrder)
+        seenReadyEventIdsDirty = false
     }
 
     private func refreshCoreConnectivity() async {
@@ -1260,7 +1493,8 @@ final class AppStore: ObservableObject {
         guard !sessionToken.isEmpty else {
             isAuthenticated = false
             activeUserId = nil
-            route = isPaired ? .login : .pairing
+            activeUserDisplayName = nil
+            setRoute(isPaired ? .login : .pairing)
             return
         }
 
@@ -1271,17 +1505,69 @@ final class AppStore: ObservableObject {
                 sessionToken = freshToken
                 localStore.saveSessionToken(freshToken)
                 isAuthenticated = true
-                activeUserId = response.user?.id
-                route = .tables
+                let fallbackUserId = response.user?.id?.trimmingCharacters(in: .whitespacesAndNewlines)
+                activeUserId = fallbackUserId?.isEmpty == true ? nil : fallbackUserId
+                activeUserDisplayName = resolveUserDisplayName(user: response.user, fallbackUserId: activeUserId)
+                selectedTableId = localStore.loadSelectedTableId(userId: activeUserId, defaultValue: selectedTableId)
+                await refreshFeatureFlagsFromCoreInternal()
+                setRoute(.tables)
             } else {
                 isAuthenticated = false
                 activeUserId = nil
-                route = isPaired ? .login : .pairing
+                activeUserDisplayName = nil
+                setRoute(isPaired ? .login : .pairing)
             }
         } catch {
             isAuthenticated = false
             activeUserId = nil
-            route = isPaired ? .login : .pairing
+            activeUserDisplayName = nil
+            setRoute(isPaired ? .login : .pairing)
+        }
+    }
+
+    private func resolveUserDisplayName(user: SessionUser?, fallbackUserId: String?) -> String? {
+        let candidates: [String?] = [
+            user?.displayName,
+            user?.loginName,
+            user?.id,
+            fallbackUserId
+        ]
+        for candidate in candidates {
+            let normalized = candidate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if !normalized.isEmpty {
+                return normalized
+            }
+        }
+        return nil
+    }
+
+    private func setRoute(_ nextRoute: AppRoute) {
+        guard route != nextRoute else { return }
+        withAnimation(POSMotion.panel) {
+            route = nextRoute
+        }
+    }
+
+    private func refreshFeatureFlagsFromCoreInternal() async {
+        do {
+            let response = try await repository.authFeatures()
+            guard response.success else { return }
+            let schlemmerEnabled = response.modules.contains { module in
+                module.key.trimmingCharacters(in: .whitespacesAndNewlines).lowercased() == featureKeySchlemmerBlockModule &&
+                    module.active
+            }
+            if isSchlemmerBlockModuleEnabled != schlemmerEnabled {
+                isSchlemmerBlockModuleEnabled = schlemmerEnabled
+                enforceModuleDependentUiState()
+            }
+        } catch {
+            // Keep last known module state when endpoint is temporarily unavailable.
+        }
+    }
+
+    private func enforceModuleDependentUiState() {
+        if !isSchlemmerBlockModuleEnabled && activeWorkTab == .schlemmer {
+            activeWorkTab = .voucher
         }
     }
 
@@ -1318,10 +1604,15 @@ final class AppStore: ObservableObject {
                 let resolvedListId = !productListId.isEmpty ? productListId : (!fallbackListId.isEmpty ? fallbackListId : "")
                 let isBlocked = normalizeCatalogProductBlocked(product)
                 let blockReason = isBlocked ? normalizeCatalogProductBlockReason(product) : ""
+                let pricing = resolveCatalogProductPricing(product)
                 return CatalogProductUI(
                     id: id,
                     name: product.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? product.name! : "Artikel",
-                    price: product.price ?? 0,
+                    price: pricing.effectivePrice,
+                    regularPrice: pricing.regularPrice,
+                    promoEnabled: pricing.promoEnabled,
+                    promoPrice: pricing.promoPrice,
+                    promoActive: pricing.promoActive,
                     taxRate: product.taxRate ?? 19,
                     groupId: resolvedListId.isEmpty ? nil : resolvedListId,
                     groupName: resolvedListId.isEmpty ? nil : listNameById[resolvedListId],
@@ -1332,7 +1623,9 @@ final class AppStore: ObservableObject {
 
             let previousSelection = selectedCatalogGroupId
             let nextSelection: String?
-            if let previousSelection, lists.contains(where: { $0.id == previousSelection }) {
+            if previousSelection == "__promo__" {
+                nextSelection = "__promo__"
+            } else if let previousSelection, lists.contains(where: { $0.id == previousSelection }) {
                 nextSelection = previousSelection
             } else {
                 // Default to "Alle" (nil) if there is no valid previous selection.
@@ -1365,7 +1658,7 @@ final class AppStore: ObservableObject {
         latestPlanner = plannerBody.planner
         latestTableLocks = plannerBody.tableLocks
 
-        let preferredTableId = toTableNumber(orderBody.store?.currentTable)
+        let preferredTableId = localStore.loadSelectedTableId(userId: activeUserId, defaultValue: selectedTableId)
         _ = applyStoreSnapshot(store: orderBody.store, preferredTableId: preferredTableId, noticeOnSuccess: noticeOnSuccess)
     }
 
@@ -1377,7 +1670,7 @@ final class AppStore: ObservableObject {
         reconcilePaymentRetryKeysFromStore(store: store)
         latestOrderStore = store
 
-        let preferred = toTableNumber(response.activeTableId) ?? toTableNumber(store.currentTable)
+        let preferred = localStore.loadSelectedTableId(userId: activeUserId, defaultValue: selectedTableId)
         return applyStoreSnapshot(store: store, preferredTableId: preferred, noticeOnSuccess: noticeOnSuccess)
     }
 
@@ -1400,6 +1693,7 @@ final class AppStore: ObservableObject {
 
         let snapshot = extractCurrentOrderFromStore(store, tableId: nextSelected)
         let tableOrderMap = extractAllTableOrders(store)
+        let tableVoucherMap = extractAllAppliedVouchers(store)
 
         let selectedStillExists: Bool
         if let selectedOrderLineId {
@@ -1413,14 +1707,26 @@ final class AppStore: ObservableObject {
         currentOrderLines = snapshot.lines
         currentOrderCode = snapshot.code
         tableOrderLinesByTableId = tableOrderMap
+        currentAppliedVouchers = snapshot.appliedVouchers
+        appliedVouchersByTableId = tableVoucherMap
         selectedOrderLineId = selectedStillExists ? selectedOrderLineId : nil
 
         if let noticeOnSuccess {
             noticeMessage = noticeOnSuccess
         }
+        localStore.saveSelectedTableId(nextSelected, userId: activeUserId)
 
         if orderOverviewTab == .ready {
             markKitchenReadyNoticesSeenForTable(nextSelected)
+        }
+
+        if activeWorkTab == .schlemmer {
+            schlemmerPreviewInFlight = true
+            schlemmerPreviewShowLoader = false
+            Task {
+                // Periodic table refresh should update data without a visible loading flash.
+                await refreshSchlemmerPreviewInternal(silent: true, lockInteraction: false)
+            }
         }
 
         return true
@@ -1467,14 +1773,15 @@ final class AppStore: ObservableObject {
         }.sorted { $0.id < $1.id }
     }
 
-    private func extractCurrentOrderFromStore(_ store: OrderStoreDTO?, tableId: Int) -> (lines: [OrderLineUI], code: String) {
+    private func extractCurrentOrderFromStore(_ store: OrderStoreDTO?, tableId: Int) -> (lines: [OrderLineUI], code: String, appliedVouchers: [AppliedVoucherUI]) {
         guard let entry = store?.tableOrders[String(tableId)] else {
-            return ([], "")
+            return ([], "", [])
         }
         let lines = entry.order.compactMap(mapOrderLine).sorted {
             normalizeOrderStatus($0.status) == "ordered" && normalizeOrderStatus($1.status) != "ordered"
         }
-        return (lines, entry.orderCode ?? "")
+        let appliedVouchers = (entry.appliedVouchers ?? []).compactMap(mapAppliedVoucher).sorted { $0.appliedAt > $1.appliedAt }
+        return (lines, entry.orderCode ?? "", appliedVouchers)
     }
 
     private func extractAllTableOrders(_ store: OrderStoreDTO?) -> [Int: [OrderLineUI]] {
@@ -1488,12 +1795,24 @@ final class AppStore: ObservableObject {
         return mapped
     }
 
+    private func extractAllAppliedVouchers(_ store: OrderStoreDTO?) -> [Int: [AppliedVoucherUI]] {
+        var mapped: [Int: [AppliedVoucherUI]] = [:]
+        for (tableKey, entry) in store?.tableOrders ?? [:] {
+            guard let tableId = toTableNumber(tableKey) else { continue }
+            mapped[tableId] = (entry.appliedVouchers ?? [])
+                .compactMap(mapAppliedVoucher)
+                .sorted { $0.appliedAt > $1.appliedAt }
+        }
+        return mapped
+    }
+
     private func mapOrderLine(_ line: OrderLineDTO) -> OrderLineUI? {
         let lineId = line.id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         let productId = line.productId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         guard !lineId.isEmpty, !productId.isEmpty else {
             return nil
         }
+        let promotionMeta = resolveOrderLinePromotionMeta(line)
 
         return OrderLineUI(
             id: lineId,
@@ -1501,11 +1820,28 @@ final class AppStore: ObservableObject {
             name: line.name?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? line.name! : "Artikel",
             qty: line.qty ?? 0,
             price: line.price ?? 0,
+            basePrice: promotionMeta.basePrice,
+            promoApplied: promotionMeta.promoApplied,
+            promoPrice: promotionMeta.promoPrice,
             taxRate: line.taxRate ?? 19,
             status: line.status?.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty == false ? line.status! : "new",
+            cancelReason: (line.cancelledReason ?? line.cancelled_reason ?? "").trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
             kitchenReady: line.kitchenReady == true,
             kitchenReadyAt: line.kitchenReadyAt ?? 0,
             kitchenReadyBy: line.kitchenReadyBy?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        )
+    }
+
+    private func mapAppliedVoucher(_ voucher: AppliedVoucherDTO) -> AppliedVoucherUI? {
+        let code = voucher.code?.trimmingCharacters(in: .whitespacesAndNewlines).uppercased() ?? ""
+        guard !code.isEmpty else {
+            return nil
+        }
+        return AppliedVoucherUI(
+            code: code,
+            amount: max(0, voucher.amount ?? 0),
+            remaining: max(0, voucher.remaining ?? 0),
+            appliedAt: voucher.appliedAt ?? 0
         )
     }
 
@@ -1535,6 +1871,7 @@ final class AppStore: ObservableObject {
 
         seenReadyEventIdsOrder.removeAll()
         seenReadyEventIdsSet.removeAll()
+        seenReadyEventIdsDirty = false
         localStore.saveSeenReadyEventIds([])
 
         if clearKitchenNotices {
@@ -1677,6 +2014,46 @@ final class AppStore: ObservableObject {
         }
     }
 
+    private func normalizeCatalogProductPromoEnabled(_ product: CatalogProductDTO) -> Bool {
+        product.promoEnabled == true ||
+            product.promo_enabled == true ||
+            product.actionPriceEnabled == true ||
+            product.action_price_enabled == true
+    }
+
+    private func normalizeCatalogProductPromoPrice(_ product: CatalogProductDTO) -> Double? {
+        let candidate = product.promoPrice ?? product.promo_price ?? product.actionPrice ?? product.action_price
+        guard let candidate else {
+            return nil
+        }
+        return max(0, candidate)
+    }
+
+    private func resolveCatalogProductPricing(_ product: CatalogProductDTO) -> (
+        regularPrice: Double,
+        promoEnabled: Bool,
+        promoPrice: Double?,
+        promoActive: Bool,
+        effectivePrice: Double
+    ) {
+        let regularPrice = max(0, product.price ?? 0)
+        let promoEnabled = normalizeCatalogProductPromoEnabled(product)
+        let promoPrice = normalizeCatalogProductPromoPrice(product)
+        let promoActive = promoEnabled && (promoPrice ?? 0) > 0 && (promoPrice ?? 0) < regularPrice
+        let effectivePrice = promoActive ? (promoPrice ?? regularPrice) : regularPrice
+        return (regularPrice, promoEnabled, promoPrice, promoActive, effectivePrice)
+    }
+
+    private func resolveOrderLinePromotionMeta(_ line: OrderLineDTO) -> (basePrice: Double, promoApplied: Bool, promoPrice: Double?) {
+        let unitPrice = max(0, line.price ?? 0)
+        let basePrice = max(unitPrice, line.basePrice ?? line.base_price ?? unitPrice)
+        let explicitPromoApplied = line.promoApplied == true || line.promo_applied == true
+        let promoPriceCandidate = max(0, line.promoPrice ?? line.promo_price ?? unitPrice)
+        let inferredPromoApplied = promoPriceCandidate > 0 && promoPriceCandidate < basePrice
+        let promoApplied = explicitPromoApplied || inferredPromoApplied || (unitPrice + 0.001) < basePrice
+        return (basePrice, promoApplied, promoApplied ? promoPriceCandidate : nil)
+    }
+
     private func normalizeCatalogProductBlocked(_ product: CatalogProductDTO) -> Bool {
         product.isBlocked == true || product.is_blocked == true || product.is_blocked_flag == true || product.blocked == true
     }
@@ -1706,12 +2083,230 @@ final class AppStore: ObservableObject {
                 id: product.id,
                 name: product.name,
                 price: product.price,
+                regularPrice: product.regularPrice,
+                promoEnabled: product.promoEnabled,
+                promoPrice: product.promoPrice,
+                promoActive: product.promoActive,
                 taxRate: product.taxRate,
                 groupId: product.groupId,
                 groupName: product.groupName,
                 isBlocked: true,
                 blockReason: reason.isEmpty ? "Ausverkauft" : reason
             )
+        }
+    }
+
+    private func refreshSchlemmerPreviewInternal(silent: Bool = false, lockInteraction: Bool = true) async {
+        guard isSchlemmerBlockModuleEnabled else {
+            schlemmerPreviewRequestGeneration &+= 1
+            schlemmerEligibleLines = []
+            schlemmerSelection = [:]
+            schlemmerAutoSelection = [:]
+            schlemmerRequiredFoodUnits = 0
+            schlemmerAvailableUnits = 0
+            schlemmerRequiredSelectionCount = 0
+            schlemmerSelectedUnits = 0
+            schlemmerLastErrorCode = nil
+            schlemmerPreviewInFlight = false
+            schlemmerPreviewShowLoader = false
+            return
+        }
+        guard isOnline else {
+            schlemmerPreviewRequestGeneration &+= 1
+            schlemmerPreviewInFlight = false
+            schlemmerPreviewShowLoader = false
+            if !silent {
+                noticeMessage = "Schlemmer Block nur online verfügbar."
+            }
+            return
+        }
+
+        schlemmerPreviewRequestGeneration &+= 1
+        let requestGeneration = schlemmerPreviewRequestGeneration
+        schlemmerPreviewInFlight = true
+        schlemmerPreviewShowLoader = lockInteraction ? !silent : false
+        defer {
+            if requestGeneration == schlemmerPreviewRequestGeneration {
+                schlemmerPreviewInFlight = false
+                schlemmerPreviewShowLoader = false
+            }
+        }
+        do {
+            let payloadSelection = schlemmerSelection.isEmpty ? nil : schlemmerSelection
+            let result = try await repository.previewSchlemmer(
+                tableId: String(selectedTableId),
+                type: schlemmerType.coreValue,
+                selection: payloadSelection
+            )
+            guard requestGeneration == schlemmerPreviewRequestGeneration else { return }
+            if result.success, result.result?.ok == true {
+                schlemmerLastErrorCode = nil
+                applySchlemmerPreviewValue(result.result?.value)
+            } else {
+                let errorCode = result.result?.error ?? result.error ?? "SCHLEMMER_PREVIEW_FAILED"
+                schlemmerLastErrorCode = errorCode
+                if errorCode.uppercased() == "SCHLEMMER_MODULE_DISABLED" {
+                    isSchlemmerBlockModuleEnabled = false
+                    enforceModuleDependentUiState()
+                }
+                if !silent {
+                    noticeMessage = describeSchlemmerError(errorCode)
+                }
+            }
+        } catch {
+            guard requestGeneration == schlemmerPreviewRequestGeneration else { return }
+            let errorCode = (error as? CoreClientError)?.errorCode ?? error.localizedDescription
+            schlemmerLastErrorCode = errorCode
+            if !silent {
+                noticeMessage = describeSchlemmerError(errorCode)
+            }
+        }
+    }
+
+    private func applySchlemmerPreviewValue(_ value: [String: JSONValue]?) {
+        let payload = value ?? [:]
+        let parsedAvailable = payload["availableUnits"]?.intValue ?? 0
+        let parsedRequiredFood = payload["requiredFoodUnits"]?.intValue ?? 0
+        let parsedRequiredSelection = payload["requiredSelectionCount"]?.intValue ?? 0
+        let parsedEligible = parseSchlemmerEligibleLines(payload["eligibleLines"])
+        let parsedAutoSelection = normalizeSchlemmerSelection(
+            parseSchlemmerSelectionPayload(payload["autoSelection"]),
+            eligibleLines: parsedEligible
+        )
+        let parsedSelection = normalizeSchlemmerSelection(
+            parseSchlemmerSelectionPayload(payload["selection"]),
+            eligibleLines: parsedEligible
+        )
+
+        schlemmerAvailableUnits = max(0, parsedAvailable)
+        schlemmerRequiredFoodUnits = max(0, parsedRequiredFood)
+        schlemmerRequiredSelectionCount = max(0, parsedRequiredSelection)
+        schlemmerEligibleLines = parsedEligible
+        schlemmerAutoSelection = parsedAutoSelection
+
+        let fallbackSelection = parsedSelection.isEmpty ? parsedAutoSelection : parsedSelection
+        schlemmerSelection = fallbackSelection
+        let selectedUnitsFromPayload = payload["selectedUnits"]?.intValue ?? fallbackSelection.values.reduce(0, +)
+        schlemmerSelectedUnits = max(0, selectedUnitsFromPayload)
+    }
+
+    private func parseSchlemmerEligibleLines(_ value: JSONValue?) -> [SchlemmerEligibleLineUI] {
+        guard case .array(let array)? = value else { return [] }
+        return array.compactMap { item in
+            guard case .object(let raw) = item else { return nil }
+            let lineId = raw["lineId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let productId = raw["productId"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            guard !lineId.isEmpty, !productId.isEmpty else { return nil }
+            let resolvedName = raw["name"]?.stringValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            return SchlemmerEligibleLineUI(
+                lineId: lineId,
+                productId: productId,
+                name: resolvedName.isEmpty ? "Artikel" : resolvedName,
+                qty: max(0, raw["qty"]?.intValue ?? 0),
+                unitPrice: max(0, raw["unitPrice"]?.doubleValue ?? 0),
+                isKidsMeal: raw["isKidsMeal"]?.boolValue == true
+            )
+        }
+    }
+
+    private func parseSchlemmerSelectionPayload(_ value: JSONValue?) -> [String: Int] {
+        guard case .object(let object)? = value else { return [:] }
+        var parsed: [String: Int] = [:]
+        for (key, rawValue) in object {
+            let normalizedKey = key.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !normalizedKey.isEmpty else { continue }
+            let qty = max(0, rawValue.intValue ?? 0)
+            if qty > 0 {
+                parsed[normalizedKey] = qty
+            }
+        }
+        return parsed
+    }
+
+    private func normalizeSchlemmerSelection(_ selection: [String: Int], eligibleLines: [SchlemmerEligibleLineUI]) -> [String: Int] {
+        let maxByLine = Dictionary(uniqueKeysWithValues: eligibleLines.map { ($0.lineId, max(0, $0.qty)) })
+        var normalized: [String: Int] = [:]
+        for (lineIdRaw, qtyRaw) in selection {
+            let lineId = lineIdRaw.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !lineId.isEmpty, let maxQty = maxByLine[lineId], maxQty > 0 else { continue }
+            let qty = min(max(0, qtyRaw), maxQty)
+            if qty > 0 {
+                normalized[lineId] = qty
+            }
+        }
+        return normalized
+    }
+
+    private func describeVoucherError(_ rawCode: String) -> String {
+        let normalized = rawCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        switch normalized {
+        case "INVALID_VOUCHER_CODE":
+            return "Gutschein Nummer ungültig."
+        case "VOUCHER_NOT_FOUND":
+            return "Gutschein Nummer unbekannt."
+        case "VOUCHER_EXPIRED":
+            return "Gutschein abgelaufen."
+        case "VOUCHER_ALREADY_REDEEMED":
+            return "Gutschein bereits verwendet."
+        case "VOUCHER_RESERVED_FOR_OTHER_TABLE":
+            return "Gutschein ist bereits an einem anderen Tisch reserviert."
+        case "VOUCHER_NOT_APPLIED":
+            return "Gutschein wurde auf diesem Tisch nicht angewendet."
+        default:
+            return "Gutschein konnte nicht verarbeitet werden: \(normalized.isEmpty ? rawCode : normalized)"
+        }
+    }
+
+    private func describeSchlemmerError(_ rawCode: String) -> String {
+        let normalized = rawCode.trimmingCharacters(in: .whitespacesAndNewlines).uppercased()
+        if normalized.contains("SCHLEMMER_NOT_ENOUGH_FOOD_ITEMS")
+            || normalized.contains("SCHLEMMER_INSUFFICIENT_FOOD_UNITS")
+            || normalized.contains("SCHLEMMER_NO_ELIGIBLE_LINES")
+            || normalized.contains("SCHLEMMER_NO_ELIGIBLE_ITEMS") {
+            return schlemmerInsufficientItemsMessage(for: schlemmerType)
+        }
+        if normalized.contains("HTTP_422") || normalized.contains("UNPROCESSABLE_ENTITY") {
+            return schlemmerInsufficientItemsMessage(for: schlemmerType)
+        }
+        switch normalized {
+        case "INVALID_SCHLEMMER_TYPE":
+            return "Ungültiger Schlemmer-Block-Typ."
+        case "SCHLEMMER_MODULE_DISABLED":
+            return "Schlemmer Block Modul ist nicht aktiv."
+        case "SCHLEMMER_SELECTION_EMPTY":
+            return "Bitte mindestens eine Schlemmer-Position auswählen."
+        case "SCHLEMMER_SELECTION_INVALID":
+            return "Schlemmer-Auswahl ist ungültig."
+        case "SCHLEMMER_SELECTION_MISMATCH":
+            return "Schlemmer-Auswahl ist ungültig."
+        case "SCHLEMMER_KIDS_MEAL_REQUIRED":
+            return "Für Familie muss mindestens ein Kinderessen bestellt sein."
+        case "SCHLEMMER_CANCEL_FAILED":
+            return "Schlemmer Block konnte nicht angewendet werden."
+        default:
+            return "Schlemmer Block fehlgeschlagen: \(normalized.isEmpty ? rawCode : normalized)"
+        }
+    }
+
+    private func schlemmerMinimumFoodUnits(for type: SchlemmerBlockTypeUI) -> Int {
+        switch type {
+        case .twoForOne:
+            return 2
+        case .fourForTwo:
+            return 4
+        case .family:
+            return 1
+        }
+    }
+
+    private func schlemmerInsufficientItemsMessage(for type: SchlemmerBlockTypeUI) -> String {
+        switch type {
+        case .twoForOne:
+            return "Mindestens 2 Essen müssen bestellt sein."
+        case .fourForTwo:
+            return "Mindestens 4 Essen müssen bestellt sein."
+        case .family:
+            return "Für Familie muss mindestens ein Kinderessen bestellt sein."
         }
     }
 

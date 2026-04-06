@@ -18,6 +18,11 @@ struct TransferPanelView: View {
     @State private var highlightedDropTableId: Int?
     @State private var expandedDropTableId: Int?
     @State private var dropPulseTableId: Int?
+    @State private var tableFramesById: [Int: CGRect] = [:]
+    @State private var gridVisibleFrame: CGRect = .zero
+    @State private var autoScrollDirection: TransferAutoScrollDirection = .none
+    @State private var isDragInsideTransferGrid = false
+    @State private var lastHoveredMidY: CGFloat?
 
     init(
         isTablet: Bool,
@@ -51,10 +56,62 @@ struct TransferPanelView: View {
                     .font(POSTypography.titleLarge)
                     .foregroundStyle(POSColor.slate050)
 
-                ScrollView {
-                    LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: POSSpacing.xs), count: 3), spacing: POSSpacing.xs) {
-                        ForEach(sortedTables) { table in
-                            transferTableCard(table)
+                ScrollViewReader { proxy in
+                    ScrollView {
+                        LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: POSSpacing.xs), count: 3), spacing: POSSpacing.xs) {
+                            ForEach(sortedTables) { table in
+                                transferTableCard(table)
+                                    .id(transferScrollID(for: table.id))
+                            }
+                        }
+                    }
+                    .background(
+                        GeometryReader { proxy in
+                            Color.clear.preference(
+                                key: TransferGridFramePreferenceKey.self,
+                                value: proxy.frame(in: .global)
+                            )
+                        }
+                    )
+                    .onPreferenceChange(TransferGridFramePreferenceKey.self) { frame in
+                        gridVisibleFrame = frame
+                        updateAutoScrollDirection()
+                    }
+                    .onPreferenceChange(TransferTableFramePreferenceKey.self) { frames in
+                        tableFramesById = frames
+                        updateAutoScrollDirection()
+                    }
+                    .onChange(of: highlightedDropTableId) { _, _ in
+                        updateAutoScrollDirection()
+                    }
+                    .onChange(of: showSelectionDialog) { _, isShown in
+                        if isShown {
+                            autoScrollDirection = .none
+                            isDragInsideTransferGrid = false
+                            lastHoveredMidY = nil
+                        } else {
+                            updateAutoScrollDirection()
+                        }
+                    }
+                    .dropDestination(for: String.self) { _, _ in
+                        false
+                    } isTargeted: { targeted in
+                        isDragInsideTransferGrid = targeted
+                        if !targeted {
+                            autoScrollDirection = .none
+                            lastHoveredMidY = nil
+                        } else {
+                            updateAutoScrollDirection()
+                        }
+                    }
+                    .task(id: autoScrollDirection) {
+                        guard autoScrollDirection != .none else { return }
+                        let sortedTableIds = sortedTables.map(\.id)
+                        while !Task.isCancelled && autoScrollDirection != .none {
+                            await MainActor.run {
+                                applyAutoScrollStep(proxy: proxy, sortedTableIds: sortedTableIds)
+                            }
+                            try? await Task.sleep(nanoseconds: 150_000_000)
                         }
                     }
                 }
@@ -68,17 +125,13 @@ struct TransferPanelView: View {
             )
 
             if showSelectionDialog, let targetTableId {
-                Color.black.opacity(0.52)
-                    .ignoresSafeArea()
-                    .transition(.opacity)
-
                 transferSelectionDialog(targetTableId: targetTableId)
                     .padding(.horizontal, isTablet ? POSSpacing.md : POSSpacing.xxs)
                     .padding(.vertical, POSSpacing.sm)
                     .transition(.scale(scale: 0.97).combined(with: .opacity))
             }
         }
-        .animation(.spring(response: 0.3, dampingFraction: 0.86), value: showSelectionDialog)
+        .animation(POSMotion.panel, value: showSelectionDialog)
         .onAppear {
             initializeSourceAndTarget(preferredSourceId: selectedTableId)
         }
@@ -138,8 +191,16 @@ struct TransferPanelView: View {
         )
         .shadow(color: (isDropTarget || isExpandedTarget || isDropPulseTarget) ? POSColor.indigo500.opacity(0.48) : .clear, radius: isDropPulseTarget ? 20 : 16)
         .scaleEffect(isDropPulseTarget ? 1.08 : (isExpandedTarget ? 1.045 : 1))
-        .animation(.spring(response: 0.24, dampingFraction: 0.78), value: isExpandedTarget)
-        .animation(.spring(response: 0.2, dampingFraction: 0.68), value: isDropPulseTarget)
+        .animation(POSMotion.dragHover, value: isExpandedTarget)
+        .animation(POSMotion.dragDrop, value: isDropPulseTarget)
+        .background(
+            GeometryReader { proxy in
+                Color.clear.preference(
+                    key: TransferTableFramePreferenceKey.self,
+                    value: [table.id: proxy.frame(in: .global)]
+                )
+            }
+        )
 
         if canBeSource {
             return AnyView(
@@ -150,10 +211,7 @@ struct TransferPanelView: View {
                     .dropDestination(for: String.self) { items, _ in
                         handleTableDrop(onTargetTableId: table.id, items: items)
                     } isTargeted: { targeted in
-                        withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
-                            highlightedDropTableId = targeted ? table.id : (highlightedDropTableId == table.id ? nil : highlightedDropTableId)
-                            expandedDropTableId = targeted ? table.id : (expandedDropTableId == table.id ? nil : expandedDropTableId)
-                        }
+                        updateDropTargetHighlight(isTargeted: targeted, tableId: table.id)
                     }
             )
         }
@@ -164,10 +222,7 @@ struct TransferPanelView: View {
                     .dropDestination(for: String.self) { items, _ in
                         handleTableDrop(onTargetTableId: table.id, items: items)
                     } isTargeted: { targeted in
-                        withAnimation(.spring(response: 0.22, dampingFraction: 0.8)) {
-                            highlightedDropTableId = targeted ? table.id : (highlightedDropTableId == table.id ? nil : highlightedDropTableId)
-                            expandedDropTableId = targeted ? table.id : (expandedDropTableId == table.id ? nil : expandedDropTableId)
-                        }
+                        updateDropTargetHighlight(isTargeted: targeted, tableId: table.id)
                     }
             )
         }
@@ -203,9 +258,10 @@ struct TransferPanelView: View {
 
                 VStack(spacing: POSSpacing.sm) {
                     Button {
-                        withAnimation(POSMotion.quick) {
+                        withAnimation(POSMotion.feedback) {
                             showSelectionDialog = false
                         }
+                        POSHaptics.light()
                     } label: {
                         Image(systemName: "xmark")
                             .font(.system(size: 12, weight: .semibold))
@@ -241,8 +297,9 @@ struct TransferPanelView: View {
             }
 
             Button("Umsetzen") {
+                POSHaptics.medium()
                 onMoveSelection(targetTableId, selectionByLineId)
-                withAnimation(POSMotion.quick) {
+                withAnimation(POSMotion.feedback) {
                     showSelectionDialog = false
                 }
             }
@@ -288,7 +345,10 @@ struct TransferPanelView: View {
                     .foregroundStyle(POSColor.slate050)
                 Spacer()
                 Button {
-                    selectionByLineId = Dictionary(uniqueKeysWithValues: sourceLines.map { ($0.id, $0.qty) })
+                    withAnimation(POSMotion.feedback) {
+                        selectionByLineId = Dictionary(uniqueKeysWithValues: sourceLines.map { ($0.id, $0.qty) })
+                    }
+                    POSHaptics.selection()
                 } label: {
                     Image(systemName: "arrow.down")
                         .font(.system(size: 12, weight: .semibold))
@@ -410,7 +470,10 @@ struct TransferPanelView: View {
                                         .foregroundStyle(POSColor.slate050)
 
                                     Button {
-                                        selectionByLineId.removeValue(forKey: preview.sourceLineId)
+                                        withAnimation(POSMotion.feedback) {
+                                            selectionByLineId.removeValue(forKey: preview.sourceLineId)
+                                        }
+                                        POSHaptics.light()
                                     } label: {
                                         Image(systemName: "xmark.circle.fill")
                                             .font(.system(size: 18, weight: .semibold))
@@ -462,11 +525,14 @@ struct TransferPanelView: View {
             HStack(spacing: POSSpacing.xs) {
                 Button("-") {
                     let next = max(0, selectedQty - 1)
-                    if next == 0 {
-                        selectionByLineId.removeValue(forKey: line.id)
-                    } else {
-                        selectionByLineId[line.id] = next
+                    withAnimation(POSMotion.feedback) {
+                        if next == 0 {
+                            selectionByLineId.removeValue(forKey: line.id)
+                        } else {
+                            selectionByLineId[line.id] = next
+                        }
                     }
+                    POSHaptics.light()
                 }
                 .buttonStyle(StepperButtonStyle())
 
@@ -477,7 +543,10 @@ struct TransferPanelView: View {
 
                 Button("+") {
                     let next = min(line.qty, selectedQty + 1)
-                    selectionByLineId[line.id] = next
+                    withAnimation(POSMotion.feedback) {
+                        selectionByLineId[line.id] = next
+                    }
+                    POSHaptics.light()
                 }
                 .buttonStyle(StepperButtonStyle())
             }
@@ -489,6 +558,8 @@ struct TransferPanelView: View {
                 .stroke(POSColor.slate700.opacity(selectedQty > 0 ? 1 : 0.7), lineWidth: selectedQty > 0 ? 2 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+        .scaleEffect(selectedQty > 0 ? 1.01 : 1.0)
+        .animation(POSMotion.feedback, value: selectedQty)
     }
 
     private func initializeSourceAndTarget(preferredSourceId: Int) {
@@ -549,36 +620,114 @@ struct TransferPanelView: View {
             return false
         }
 
-        withAnimation(.spring(response: 0.2, dampingFraction: 0.68)) {
+        withAnimation(POSMotion.dragDrop) {
             sourceTableId = droppedSourceTableId
             expandedDropTableId = targetTableId
             dropPulseTableId = targetTableId
             highlightedDropTableId = targetTableId
+            autoScrollDirection = .none
         }
+        POSHaptics.medium()
 
         Task {
-            try? await Task.sleep(nanoseconds: 90_000_000)
+            try? await Task.sleep(nanoseconds: 70_000_000)
             await MainActor.run {
-                withAnimation(.spring(response: 0.28, dampingFraction: 0.86)) {
+                withAnimation(POSMotion.panel) {
                     self.targetTableId = targetTableId
                     selectionByLineId = [:]
                     showSelectionDialog = true
                 }
-                withAnimation(POSMotion.quick) {
+                POSHaptics.selection()
+                withAnimation(POSMotion.feedback) {
                     highlightedDropTableId = nil
                     expandedDropTableId = nil
                 }
             }
 
-            try? await Task.sleep(nanoseconds: 170_000_000)
+            try? await Task.sleep(nanoseconds: 140_000_000)
             await MainActor.run {
-                withAnimation(POSMotion.quick) {
+                withAnimation(POSMotion.feedback) {
                     dropPulseTableId = nil
                 }
             }
         }
 
         return true
+    }
+
+    private func transferScrollID(for tableId: Int) -> String {
+        "transfer-table-\(tableId)"
+    }
+
+    private func updateDropTargetHighlight(isTargeted targeted: Bool, tableId: Int) {
+        let entering = targeted && highlightedDropTableId != tableId
+        withAnimation(POSMotion.dragHover) {
+            highlightedDropTableId = targeted ? tableId : (highlightedDropTableId == tableId ? nil : highlightedDropTableId)
+            expandedDropTableId = targeted ? tableId : (expandedDropTableId == tableId ? nil : expandedDropTableId)
+        }
+        if targeted, let frame = tableFramesById[tableId] {
+            lastHoveredMidY = frame.midY
+        }
+        if entering {
+            POSHaptics.selection()
+        }
+        updateAutoScrollDirection()
+    }
+
+    private func updateAutoScrollDirection() {
+        guard
+            !showSelectionDialog,
+            isDragInsideTransferGrid,
+            gridVisibleFrame.height > 0
+        else {
+            autoScrollDirection = .none
+            return
+        }
+
+        let upperThreshold = gridVisibleFrame.minY + (gridVisibleFrame.height * 0.34)
+        let lowerThreshold = gridVisibleFrame.minY + (gridVisibleFrame.height * 0.66)
+        let referenceMidY: CGFloat?
+        if let hoveredId = highlightedDropTableId,
+           let hoveredFrame = tableFramesById[hoveredId] {
+            referenceMidY = hoveredFrame.midY
+            lastHoveredMidY = hoveredFrame.midY
+        } else {
+            referenceMidY = lastHoveredMidY
+        }
+
+        guard let midY = referenceMidY else {
+            autoScrollDirection = .none
+            return
+        }
+
+        if midY >= lowerThreshold {
+            autoScrollDirection = .down
+        } else if midY <= upperThreshold {
+            autoScrollDirection = .up
+        } else {
+            autoScrollDirection = .none
+        }
+    }
+
+    @MainActor
+    private func applyAutoScrollStep(proxy: ScrollViewProxy, sortedTableIds: [Int]) {
+        guard
+            !sortedTableIds.isEmpty,
+            let hoveredId = highlightedDropTableId,
+            let hoveredIndex = sortedTableIds.firstIndex(of: hoveredId)
+        else {
+            return
+        }
+
+        let step = 1
+        let directionStep = autoScrollDirection == .down ? step : -step
+        let targetIndex = min(max(hoveredIndex + directionStep, 0), sortedTableIds.count - 1)
+        guard targetIndex != hoveredIndex else { return }
+
+        let anchor: UnitPoint = autoScrollDirection == .down ? .bottom : .top
+        withAnimation(.easeInOut(duration: 0.2)) {
+            proxy.scrollTo(transferScrollID(for: sortedTableIds[targetIndex]), anchor: anchor)
+        }
     }
 
     private func compactDragPreview(tableLabel: String) -> some View {
@@ -661,6 +810,31 @@ struct TransferPanelView: View {
             return "cancelled"
         default:
             return "new"
+        }
+    }
+}
+
+private enum TransferAutoScrollDirection {
+    case none
+    case up
+    case down
+}
+
+private struct TransferTableFramePreferenceKey: PreferenceKey {
+    static var defaultValue: [Int: CGRect] = [:]
+
+    static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, newest in newest })
+    }
+}
+
+private struct TransferGridFramePreferenceKey: PreferenceKey {
+    static var defaultValue: CGRect = .zero
+
+    static func reduce(value: inout CGRect, nextValue: () -> CGRect) {
+        let next = nextValue()
+        if !next.isEmpty {
+            value = next
         }
     }
 }

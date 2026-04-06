@@ -132,6 +132,10 @@ final class CoreAPIClient {
         try await request(path: "auth/session", method: "GET", body: Optional<String>.none)
     }
 
+    func authFeatures() async throws -> AuthFeaturesResponse {
+        try await request(path: "auth/features", method: "GET", body: Optional<String>.none)
+    }
+
     func logout() async throws -> SessionResponse {
         try await request(path: "auth/logout", method: "POST", body: PayloadRequest(payload: [String: String]()))
     }
@@ -171,13 +175,23 @@ final class CoreAPIClient {
     }
 
     func addLine(tableId: String, product: CatalogProductDTO) async throws -> StatefulCommandResponse {
+        let regularPrice = Self.resolveRegularPrice(product)
+        let promoPrice = Self.resolvePromoPrice(product)
+        let explicitPromoApplied = Self.resolvePromoAppliedFlag(product)
+        let promoEnabled = Self.resolvePromoEnabledFlag(product)
+        let inferredPromoApplied = promoEnabled && (promoPrice != nil) && promoPrice! > 0 && promoPrice! < regularPrice
+        let promoApplied = explicitPromoApplied || inferredPromoApplied
+        let effectivePrice = promoApplied ? (promoPrice ?? regularPrice) : regularPrice
         let payload = AddLinePayload(
             tableId: tableId,
             product: OrderProductPayload(
                 id: product.id?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
                 name: product.name?.trimmingCharacters(in: .whitespacesAndNewlines) ?? "",
-                price: product.price ?? 0,
-                taxRate: product.taxRate ?? 19
+                price: effectivePrice,
+                taxRate: product.taxRate ?? 19,
+                basePrice: promoApplied ? regularPrice : nil,
+                promoApplied: promoApplied ? true : nil,
+                promoPrice: promoApplied ? (promoPrice ?? effectivePrice) : nil
             )
         )
         return try await request(
@@ -267,6 +281,46 @@ final class CoreAPIClient {
         )
     }
 
+    func applyVoucher(tableId: String, code: String) async throws -> StatefulCommandResponse {
+        let payload = VoucherApplyPayload(tableId: tableId, code: code)
+        return try await request(
+            path: "commands/vouchers/apply",
+            method: "POST",
+            body: PayloadRequest(payload: payload),
+            idempotencyKey: IdempotencyKeyFactory.next(scope: "vouchers-apply", platformPrefix: "ios")
+        )
+    }
+
+    func removeVoucher(tableId: String, code: String) async throws -> StatefulCommandResponse {
+        let payload = VoucherRemovePayload(tableId: tableId, code: code)
+        return try await request(
+            path: "commands/vouchers/remove",
+            method: "POST",
+            body: PayloadRequest(payload: payload),
+            idempotencyKey: IdempotencyKeyFactory.next(scope: "vouchers-remove", platformPrefix: "ios")
+        )
+    }
+
+    func previewSchlemmer(tableId: String, type: String, selection: [String: Int]?) async throws -> StatefulCommandResponse {
+        let payload = SchlemmerPreviewPayload(tableId: tableId, type: type, selection: selection)
+        return try await request(
+            path: "commands/vouchers/schlemmer-preview",
+            method: "POST",
+            body: PayloadRequest(payload: payload),
+            idempotencyKey: IdempotencyKeyFactory.next(scope: "vouchers-schlemmer-preview", platformPrefix: "ios")
+        )
+    }
+
+    func applySchlemmer(tableId: String, type: String, selection: [String: Int]) async throws -> StatefulCommandResponse {
+        let payload = SchlemmerApplyPayload(tableId: tableId, type: type, selection: selection)
+        return try await request(
+            path: "commands/vouchers/schlemmer-apply",
+            method: "POST",
+            body: PayloadRequest(payload: payload),
+            idempotencyKey: IdempotencyKeyFactory.next(scope: "vouchers-schlemmer-apply", platformPrefix: "ios")
+        )
+    }
+
     private func request<Response: Decodable, Body: Encodable>(
         path: String,
         method: String,
@@ -345,5 +399,35 @@ final class CoreAPIClient {
             .replacingOccurrences(of: "http://", with: "")
             .replacingOccurrences(of: "https://", with: "")
             .trimmingCharacters(in: CharacterSet(charactersIn: "/"))
+    }
+
+    private static func resolveRegularPrice(_ product: CatalogProductDTO) -> Double {
+        let explicitBase = product.basePrice ?? product.base_price
+        let fallbackPrice = product.price ?? 0
+        let candidate = explicitBase ?? fallbackPrice
+        return max(0, candidate)
+    }
+
+    private static func resolvePromoPrice(_ product: CatalogProductDTO) -> Double? {
+        let candidate =
+            product.promoPrice ??
+            product.promo_price ??
+            product.actionPrice ??
+            product.action_price
+        guard let candidate else {
+            return nil
+        }
+        return max(0, candidate)
+    }
+
+    private static func resolvePromoEnabledFlag(_ product: CatalogProductDTO) -> Bool {
+        product.promoEnabled == true ||
+            product.promo_enabled == true ||
+            product.actionPriceEnabled == true ||
+            product.action_price_enabled == true
+    }
+
+    private static func resolvePromoAppliedFlag(_ product: CatalogProductDTO) -> Bool {
+        product.promoApplied == true || product.promo_applied == true
     }
 }

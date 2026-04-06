@@ -17,6 +17,27 @@ enum WorkTab: String, CaseIterable {
     case payment = "Zahlung"
     case split = "Split"
     case transfer = "Umsetzen"
+    case voucher = "Gutschein"
+    case schlemmer = "Schlemmer Block"
+}
+
+enum SchlemmerBlockTypeUI: String, CaseIterable, Identifiable {
+    case twoForOne = "2:1"
+    case fourForTwo = "4:2"
+    case family = "Familie"
+
+    var id: String { rawValue }
+
+    var coreValue: String {
+        switch self {
+        case .twoForOne:
+            return "2:1"
+        case .fourForTwo:
+            return "4:2"
+        case .family:
+            return "familie"
+        }
+    }
 }
 
 enum PaymentMethod: String, CaseIterable, Identifiable {
@@ -55,6 +76,10 @@ struct CatalogProductUI: Identifiable {
     let id: String
     let name: String
     let price: Double
+    let regularPrice: Double
+    let promoEnabled: Bool
+    let promoPrice: Double?
+    let promoActive: Bool
     let taxRate: Double
     let groupId: String?
     let groupName: String?
@@ -68,11 +93,33 @@ struct OrderLineUI: Identifiable {
     let name: String
     let qty: Int
     let price: Double
+    let basePrice: Double
+    let promoApplied: Bool
+    let promoPrice: Double?
     let taxRate: Double
     let status: String
+    let cancelReason: String
     let kitchenReady: Bool
     let kitchenReadyAt: Int64
     let kitchenReadyBy: String
+}
+
+struct AppliedVoucherUI: Identifiable {
+    var id: String { code }
+    let code: String
+    let amount: Double
+    let remaining: Double
+    let appliedAt: Int64
+}
+
+struct SchlemmerEligibleLineUI: Identifiable {
+    var id: String { lineId }
+    let lineId: String
+    let productId: String
+    let name: String
+    let qty: Int
+    let unitPrice: Double
+    let isKidsMeal: Bool
 }
 
 struct KitchenReadyNoticeUI: Identifiable {

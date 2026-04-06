@@ -4,6 +4,8 @@ struct ReadyNoticeListView: View {
     let tableId: Int
     let notices: [KitchenReadyNoticeUI]
     let markSeen: () -> Void
+    @State private var previousNoticeIds: Set<String> = []
+    @State private var freshlyInsertedIds: Set<String> = []
 
     var body: some View {
         VStack(alignment: .leading, spacing: POSSpacing.xs) {
@@ -22,7 +24,11 @@ struct ReadyNoticeListView: View {
                 ScrollView {
                     VStack(spacing: POSSpacing.xs) {
                         ForEach(notices) { notice in
-                            ReadyNoticeCard(notice: notice)
+                            ReadyNoticeCard(
+                                notice: notice,
+                                isFreshlyInserted: freshlyInsertedIds.contains(notice.id)
+                            )
+                            .transition(.move(edge: .top).combined(with: .opacity).combined(with: .scale(scale: 0.96)))
                         }
                     }
                 }
@@ -30,12 +36,32 @@ struct ReadyNoticeListView: View {
         }
         .onAppear {
             markSeen()
+            previousNoticeIds = Set(notices.map(\.id))
         }
+        .onChange(of: notices.map(\.id)) { _, nextIds in
+            let nextSet = Set(nextIds)
+            let inserted = nextSet.subtracting(previousNoticeIds)
+            if !inserted.isEmpty {
+                freshlyInsertedIds = inserted
+                POSHaptics.light()
+                Task {
+                    try? await Task.sleep(nanoseconds: 380_000_000)
+                    await MainActor.run {
+                        withAnimation(POSMotion.feedback) {
+                            freshlyInsertedIds.subtract(inserted)
+                        }
+                    }
+                }
+            }
+            previousNoticeIds = nextSet
+        }
+        .animation(POSMotion.overlay, value: notices.map(\.id))
     }
 }
 
 private struct ReadyNoticeCard: View {
     let notice: KitchenReadyNoticeUI
+    let isFreshlyInserted: Bool
 
     var body: some View {
         HStack(alignment: .top, spacing: POSSpacing.sm) {
@@ -64,6 +90,9 @@ private struct ReadyNoticeCard: View {
                 .stroke(POSColor.kitchenReady500.opacity(0.56), lineWidth: 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+        .scaleEffect(isFreshlyInserted ? 1.015 : 1.0)
+        .shadow(color: isFreshlyInserted ? POSColor.kitchenReady500.opacity(0.34) : .clear, radius: 10, y: 4)
+        .animation(POSMotion.feedback, value: isFreshlyInserted)
     }
 
     private var timestampText: String {

@@ -218,6 +218,42 @@ struct SessionResponse: Decodable {
     let device: BoundDevice?
 }
 
+struct AuthFeaturesResponse: Decodable {
+    let success: Bool
+    let error: String?
+    let valid: Bool?
+    let features: [String: Bool]?
+    let modules: [AuthFeatureModule]
+}
+
+struct AuthFeatureModule: Decodable {
+    let key: String
+    let name: String?
+    let description: String?
+    let active: Bool
+
+    private enum CodingKeys: String, CodingKey {
+        case key
+        case name
+        case description
+        case active
+        case featureKey
+        case feature_key
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        let rawKey = try c.decodeIfPresent(String.self, forKey: .key)
+            ?? c.decodeIfPresent(String.self, forKey: .featureKey)
+            ?? c.decodeIfPresent(String.self, forKey: .feature_key)
+            ?? ""
+        key = rawKey.trimmingCharacters(in: .whitespacesAndNewlines)
+        name = try c.decodeIfPresent(String.self, forKey: .name)
+        description = try c.decodeIfPresent(String.self, forKey: .description)
+        active = try c.decodeIfPresent(Bool.self, forKey: .active) ?? false
+    }
+}
+
 struct CoreCatalogResponse: Decodable {
     let success: Bool
     let error: String?
@@ -255,6 +291,72 @@ struct CatalogProductDTO: Decodable {
     let blocked: Bool?
     let blockReason: String?
     let block_reason: String?
+    let basePrice: Double?
+    let base_price: Double?
+    let promoEnabled: Bool?
+    let promo_enabled: Bool?
+    let actionPriceEnabled: Bool?
+    let action_price_enabled: Bool?
+    let promoApplied: Bool?
+    let promo_applied: Bool?
+    let promoPrice: Double?
+    let promo_price: Double?
+    let actionPrice: Double?
+    let action_price: Double?
+
+    init(
+        id: String? = nil,
+        name: String? = nil,
+        price: Double? = nil,
+        taxRate: Double? = nil,
+        groupId: String? = nil,
+        listId: String? = nil,
+        printer: String? = nil,
+        isBlocked: Bool? = nil,
+        is_blocked: Bool? = nil,
+        is_blocked_flag: Bool? = nil,
+        blocked: Bool? = nil,
+        blockReason: String? = nil,
+        block_reason: String? = nil,
+        basePrice: Double? = nil,
+        base_price: Double? = nil,
+        promoEnabled: Bool? = nil,
+        promo_enabled: Bool? = nil,
+        actionPriceEnabled: Bool? = nil,
+        action_price_enabled: Bool? = nil,
+        promoApplied: Bool? = nil,
+        promo_applied: Bool? = nil,
+        promoPrice: Double? = nil,
+        promo_price: Double? = nil,
+        actionPrice: Double? = nil,
+        action_price: Double? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.price = price
+        self.taxRate = taxRate
+        self.groupId = groupId
+        self.listId = listId
+        self.printer = printer
+        self.isBlocked = isBlocked
+        self.is_blocked = is_blocked
+        self.is_blocked_flag = is_blocked_flag
+        self.blocked = blocked
+        self.blockReason = blockReason
+        self.block_reason = block_reason
+        self.basePrice = basePrice
+        self.base_price = base_price
+        self.promoEnabled = promoEnabled
+        self.promo_enabled = promo_enabled
+        self.actionPriceEnabled = actionPriceEnabled
+        self.action_price_enabled = action_price_enabled
+        self.promoApplied = promoApplied
+        self.promo_applied = promo_applied
+        self.promoPrice = promoPrice
+        self.promo_price = promo_price
+        self.actionPrice = actionPrice
+        self.action_price = action_price
+    }
 }
 
 struct TablePlannerReadResponse: Decodable {
@@ -313,9 +415,17 @@ struct OrderStoreDTO: Decodable {
 struct TableOrderEntryDTO: Decodable {
     let order: [OrderLineDTO]
     let orderHistory: [String]
+    let appliedVouchers: [AppliedVoucherDTO]?
     let orderCode: String?
     let updatedAt: Int64?
     let lastOrderAt: Int64?
+}
+
+struct AppliedVoucherDTO: Decodable {
+    let code: String?
+    let amount: Double?
+    let remaining: Double?
+    let appliedAt: Int64?
 }
 
 struct OrderLineDTO: Decodable {
@@ -329,6 +439,14 @@ struct OrderLineDTO: Decodable {
     let kitchenReady: Bool?
     let kitchenReadyAt: Int64?
     let kitchenReadyBy: String?
+    let basePrice: Double?
+    let base_price: Double?
+    let promoApplied: Bool?
+    let promo_applied: Bool?
+    let promoPrice: Double?
+    let promo_price: Double?
+    let cancelledReason: String?
+    let cancelled_reason: String?
 }
 
 struct StatefulCommandResponse: Decodable {
@@ -374,6 +492,27 @@ struct OrderProductPayload: Encodable {
     let name: String
     let price: Double
     let taxRate: Double
+    let basePrice: Double?
+    let promoApplied: Bool?
+    let promoPrice: Double?
+
+    init(
+        id: String,
+        name: String,
+        price: Double,
+        taxRate: Double,
+        basePrice: Double? = nil,
+        promoApplied: Bool? = nil,
+        promoPrice: Double? = nil
+    ) {
+        self.id = id
+        self.name = name
+        self.price = price
+        self.taxRate = taxRate
+        self.basePrice = basePrice
+        self.promoApplied = promoApplied
+        self.promoPrice = promoPrice
+    }
 }
 
 struct SubmitOrderPayload: Encodable {
@@ -413,6 +552,28 @@ struct FinalizeSplitPaymentPayload: Encodable {
     let method: String
     let splitSelection: [String: Int]
     let currentUserId: String?
+}
+
+struct VoucherApplyPayload: Encodable {
+    let tableId: String
+    let code: String
+}
+
+struct VoucherRemovePayload: Encodable {
+    let tableId: String
+    let code: String
+}
+
+struct SchlemmerPreviewPayload: Encodable {
+    let tableId: String
+    let type: String
+    let selection: [String: Int]?
+}
+
+struct SchlemmerApplyPayload: Encodable {
+    let tableId: String
+    let type: String
+    let selection: [String: Int]
 }
 
 struct CoreErrorEnvelope: Decodable {

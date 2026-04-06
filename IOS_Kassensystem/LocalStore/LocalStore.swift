@@ -167,6 +167,27 @@ final class LocalStore {
         defaults.set(ids, forKey: Keys.seenReadyEventIds)
     }
 
+    func loadSelectedTableId(userId: String?, defaultValue: Int = 1) -> Int {
+        let key = selectedTableScopeKey(userId)
+        let raw = loadStringMap(forKey: Keys.selectedTableByUser)[key] ?? ""
+        guard let parsed = Int(raw), parsed > 0 else {
+            return max(1, defaultValue)
+        }
+        return parsed
+    }
+
+    func saveSelectedTableId(_ tableId: Int, userId: String?) {
+        guard tableId > 0 else { return }
+        var map = loadStringMap(forKey: Keys.selectedTableByUser)
+        map[selectedTableScopeKey(userId)] = String(tableId)
+        saveStringMap(map, forKey: Keys.selectedTableByUser)
+    }
+
+    private func selectedTableScopeKey(_ userId: String?) -> String {
+        let normalized = userId?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        return normalized.isEmpty ? "__device__" : normalized
+    }
+
     private func loadStringMap(forKey key: String) -> [String: String] {
         guard let data = defaults.data(forKey: key) else {
             return [:]
@@ -212,5 +233,6 @@ final class LocalStore {
         static let kitchenCursor = "kitchen_notice_cursor"
         static let readyLastSeenByTable = "kitchen_ready_last_seen_cursor_by_table"
         static let seenReadyEventIds = "kitchen_ready_seen_event_ids"
+        static let selectedTableByUser = "selected_table_by_user"
     }
 }

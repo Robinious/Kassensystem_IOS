@@ -5,6 +5,7 @@ struct LoginView: View {
 
     @State private var userId: String = ""
     @State private var pin: String = ""
+    @State private var animateIn = false
 
     var body: some View {
         ScrollView {
@@ -38,6 +39,7 @@ struct LoginView: View {
 
                     HStack(spacing: POSSpacing.sm) {
                         Button(store.isBusy ? "Prüfe..." : "Anmelden") {
+                            POSHaptics.medium()
                             store.login(userId: userId, pin: pin)
                         }
                         .buttonStyle(POSPrimaryButtonStyle())
@@ -56,6 +58,13 @@ struct LoginView: View {
                 Spacer(minLength: 0)
             }
             .padding(.vertical, POSSpacing.lg)
+            .opacity(animateIn ? 1 : 0.01)
+            .offset(y: animateIn ? 0 : 16)
+        }
+        .onAppear {
+            withAnimation(POSMotion.panel) {
+                animateIn = true
+            }
         }
     }
 
@@ -63,6 +72,7 @@ struct LoginView: View {
         ZStack {
             HStack {
                 Button {
+                    POSHaptics.selection()
                     store.returnToPairing()
                 } label: {
                     HStack(spacing: POSSpacing.xxs) {

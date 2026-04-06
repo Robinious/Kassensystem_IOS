@@ -8,6 +8,7 @@ struct PaymentPanelView: View {
     @Binding var selectedMethod: PaymentMethod
     let canTriggerPayment: Bool
     let onPaymentTap: () -> Void
+    @Namespace private var paymentMethodNamespace
 
     var body: some View {
         VStack(alignment: .leading, spacing: POSSpacing.md) {
@@ -35,13 +36,20 @@ struct PaymentPanelView: View {
             HStack(spacing: POSSpacing.sm) {
                 ForEach(PaymentMethod.allCases) { method in
                     Button(method.rawValue) {
-                        selectedMethod = method
+                        withAnimation(POSMotion.select) {
+                            selectedMethod = method
+                        }
+                        POSHaptics.selection()
                     }
-                    .buttonStyle(PaymentMethodButtonStyle(selected: method == selectedMethod))
+                    .buttonStyle(PaymentMethodButtonStyle(selected: method == selectedMethod, namespace: paymentMethodNamespace))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .frame(height: 48)
+            .animation(POSMotion.select, value: selectedMethod)
 
             Button("Zahlung") {
+                POSHaptics.medium()
                 onPaymentTap()
             }
             .buttonStyle(POSPrimaryButtonStyle())
@@ -65,25 +73,48 @@ struct PaymentPanelView: View {
         if hasUnsubmittedLines {
             return "Offene unbestellte Positionen vorhanden. Bitte zuerst bestellen."
         }
-        return "Zahlung wird direkt ueber Core gebucht."
+        return "Zahlung wird direkt über Core gebucht."
     }
 }
 
 private struct PaymentMethodButtonStyle: ButtonStyle {
     let selected: Bool
+    let namespace: Namespace.ID
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(POSTypography.labelLarge)
-            .foregroundStyle(POSColor.slate050)
-            .padding(.vertical, POSSpacing.sm)
-            .frame(maxWidth: .infinity)
-            .background(selected ? POSColor.indigo500.opacity(0.22) : POSColor.slate800.opacity(0.5))
-            .overlay(
-                RoundedRectangle(cornerRadius: POSRadius.small)
-                    .stroke(selected ? POSColor.indigo500 : POSColor.slate700.opacity(0.8), lineWidth: selected ? 2 : 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
-            .opacity(configuration.isPressed ? 0.85 : 1)
+        ZStack {
+            if selected {
+                RoundedRectangle(cornerRadius: POSRadius.small, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                POSColor.indigo500.opacity(0.82),
+                                POSColor.indigo400.opacity(0.86)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .matchedGeometryEffect(id: "payment-method-pill", in: namespace)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: POSRadius.small, style: .continuous)
+                            .stroke(POSColor.slate050.opacity(0.16), lineWidth: 1)
+                    )
+                    .shadow(color: POSColor.indigo500.opacity(0.18), radius: 5, y: 2)
+            }
+
+            configuration.label
+                .font(POSTypography.labelLarge)
+                .foregroundStyle(selected ? Color.white : POSColor.slate050)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(selected ? Color.clear : POSColor.slate800.opacity(0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: POSRadius.small)
+                .stroke(selected ? Color.clear : POSColor.slate700.opacity(0.8), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+        .scaleEffect(configuration.isPressed ? 0.992 : 1)
+        .opacity(configuration.isPressed ? 0.95 : 1)
     }
 }

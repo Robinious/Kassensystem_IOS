@@ -15,6 +15,7 @@ struct TablesGridPanel: View {
                     .foregroundStyle(POSColor.slate050)
                 Spacer()
                 Button("Umsetzen") {
+                    POSHaptics.selection()
                     onOpenTransfer()
                 }
                 .buttonStyle(POSPrimaryButtonStyle())
@@ -59,6 +60,7 @@ private struct TableCardView: View {
 
     @State private var previousUnreadCount: Int = 0
     @State private var pulse = false
+    @State private var tapBounce = false
 
     private var statusColor: Color {
         switch table.status {
@@ -75,7 +77,19 @@ private struct TableCardView: View {
         let hasUnreadReady = unreadReadyCount > 0
 
         Button {
+            withAnimation(POSMotion.feedback) {
+                tapBounce = true
+            }
+            POSHaptics.light()
             onTap()
+            Task {
+                try? await Task.sleep(nanoseconds: 160_000_000)
+                await MainActor.run {
+                    withAnimation(POSMotion.feedback) {
+                        tapBounce = false
+                    }
+                }
+            }
         } label: {
             VStack(alignment: .leading, spacing: POSSpacing.xs) {
                 HStack(alignment: .top) {
@@ -143,9 +157,12 @@ private struct TableCardView: View {
                     .stroke(selected ? POSColor.indigo500 : POSColor.slate700.opacity(0.62), lineWidth: selected ? 2 : 1)
             )
             .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+            .scaleEffect(tapBounce ? 0.985 : 1.0)
+            .shadow(color: tapBounce ? POSColor.indigo500.opacity(0.28) : .clear, radius: 10, y: 4)
         }
         .buttonStyle(.plain)
         .disabled(table.status == .locked)
+        .animation(POSMotion.select, value: selected)
         .onAppear {
             previousUnreadCount = unreadReadyCount
         }

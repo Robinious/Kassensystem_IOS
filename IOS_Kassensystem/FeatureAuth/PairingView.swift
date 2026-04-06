@@ -8,6 +8,7 @@ struct PairingView: View {
     @State private var pairCodeInput: String = ""
     @State private var qrPayloadInput: String = ""
     @State private var isQrScannerPresented = false
+    @State private var animateIn = false
 
     var body: some View {
         ScrollView {
@@ -52,12 +53,14 @@ struct PairingView: View {
 
                         HStack(spacing: POSSpacing.sm) {
                             Button("QR scannen") {
+                                POSHaptics.selection()
                                 isQrScannerPresented = true
                             }
                             .buttonStyle(POSPrimaryButtonStyle())
                             .disabled(store.isBusy)
 
                             Button("Koppeln") {
+                                POSHaptics.medium()
                                 store.pairDevice(pairCodeInput)
                             }
                             .buttonStyle(POSSecondaryButtonStyle())
@@ -65,6 +68,7 @@ struct PairingView: View {
                         }
 
                         Button("QR erzeugen (optional)") {
+                            POSHaptics.selection()
                             store.generatePairCode()
                         }
                         .buttonStyle(POSSecondaryButtonStyle())
@@ -82,6 +86,7 @@ struct PairingView: View {
                                 .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
 
                             Button("QR Payload übernehmen") {
+                                POSHaptics.medium()
                                 store.scanAndPairFromQrPayload(qrPayloadInput)
                             }
                             .buttonStyle(POSSecondaryButtonStyle())
@@ -111,6 +116,7 @@ struct PairingView: View {
                         }
 
                         Button("Host übernehmen") {
+                            POSHaptics.medium()
                             store.applyHostSettings(host: hostInput, portText: portInput)
                         }
                         .buttonStyle(POSSecondaryButtonStyle())
@@ -126,15 +132,21 @@ struct PairingView: View {
                 }
             }
             .padding(.vertical, POSSpacing.lg)
+            .opacity(animateIn ? 1 : 0.01)
+            .offset(y: animateIn ? 0 : 16)
         }
         .onAppear {
             hostInput = store.hostAddress
             portInput = String(store.hostPort)
             pairCodeInput = store.pairCodeInput
+            withAnimation(POSMotion.panel) {
+                animateIn = true
+            }
         }
         .sheet(isPresented: $isQrScannerPresented) {
             PairingQrScannerSheet(
                 onScannedCode: { scannedCode in
+                    POSHaptics.success()
                     isQrScannerPresented = false
                     store.scanAndPairFromQrPayload(scannedCode)
                 },
@@ -142,6 +154,7 @@ struct PairingView: View {
                     isQrScannerPresented = false
                 },
                 onFailure: { message in
+                    POSHaptics.warning()
                     isQrScannerPresented = false
                     noticeHint(message)
                 }

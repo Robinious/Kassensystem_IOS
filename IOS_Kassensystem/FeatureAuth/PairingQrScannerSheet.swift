@@ -11,6 +11,9 @@ struct PairingQrScannerSheet: View {
             PairingQrCaptureView(onScannedCode: onScannedCode, onFailure: onFailure)
                 .ignoresSafeArea()
 
+            ScannerGuideOverlay()
+                .allowsHitTesting(false)
+
             VStack(spacing: 0) {
                 HStack(spacing: POSSpacing.sm) {
                     VStack(alignment: .leading, spacing: POSSpacing.xxs) {
@@ -23,6 +26,7 @@ struct PairingQrScannerSheet: View {
                     }
                     Spacer()
                     Button {
+                        POSHaptics.selection()
                         onCancel()
                     } label: {
                         Image(systemName: "xmark")
@@ -45,6 +49,49 @@ struct PairingQrScannerSheet: View {
                 )
 
                 Spacer()
+            }
+        }
+    }
+}
+
+private struct ScannerGuideOverlay: View {
+    @State private var animateScanLine = false
+
+    var body: some View {
+        GeometryReader { proxy in
+            let edge = min(proxy.size.width * 0.68, 300)
+
+            ZStack {
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .fill(POSColor.slate900.opacity(0.08))
+
+                RoundedRectangle(cornerRadius: 24, style: .continuous)
+                    .stroke(POSColor.indigo400.opacity(0.65), lineWidth: 2)
+                    .shadow(color: POSColor.indigo500.opacity(0.22), radius: 10, y: 4)
+
+                RoundedRectangle(cornerRadius: 2, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                POSColor.indigo500.opacity(0.0),
+                                POSColor.indigo500.opacity(0.95),
+                                POSColor.indigo500.opacity(0.0)
+                            ],
+                            startPoint: .leading,
+                            endPoint: .trailing
+                        )
+                    )
+                    .frame(height: 3)
+                    .offset(y: animateScanLine ? (edge * 0.5 - 14) : (-edge * 0.5 + 14))
+                    .blur(radius: 0.2)
+                    .shadow(color: POSColor.indigo500.opacity(0.48), radius: 8, y: 2)
+            }
+            .frame(width: edge, height: edge)
+            .position(x: proxy.size.width * 0.5, y: proxy.size.height * 0.52)
+        }
+        .onAppear {
+            withAnimation(POSMotion.panel.repeatForever(autoreverses: true)) {
+                animateScanLine = true
             }
         }
     }

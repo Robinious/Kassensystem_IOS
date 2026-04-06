@@ -9,6 +9,7 @@ struct SplitPanelView: View {
     let isOnline: Bool
     let isBusy: Bool
     let onSplitTap: () -> Void
+    @Namespace private var splitMethodNamespace
 
     var body: some View {
         VStack(alignment: .leading, spacing: POSSpacing.sm) {
@@ -87,17 +88,24 @@ struct SplitPanelView: View {
             HStack(spacing: POSSpacing.sm) {
                 ForEach(PaymentMethod.allCases) { method in
                     Button(method.rawValue) {
-                        splitMethod = method
+                        withAnimation(POSMotion.select) {
+                            splitMethod = method
+                        }
+                        POSHaptics.selection()
                     }
-                    .buttonStyle(SplitMethodButtonStyle(selected: method == splitMethod))
+                    .buttonStyle(SplitMethodButtonStyle(selected: method == splitMethod, namespace: splitMethodNamespace))
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+            .frame(height: 48)
+            .animation(POSMotion.select, value: splitMethod)
 
             Text("Split-Betrag: \(String(format: "%.2f EUR", locale: Locale(identifier: "de_DE"), splitGross))")
                 .font(POSTypography.titleMedium)
                 .foregroundStyle(POSColor.slate050)
 
             Button("Split buchen") {
+                POSHaptics.medium()
                 onSplitTap()
             }
             .buttonStyle(POSPrimaryButtonStyle())
@@ -127,11 +135,14 @@ struct SplitPanelView: View {
             HStack(spacing: POSSpacing.xs) {
                 Button("-") {
                     let next = max(0, selectedQty - 1)
-                    if next == 0 {
-                        splitSelection.removeValue(forKey: candidate.productId)
-                    } else {
-                        splitSelection[candidate.productId] = next
+                    withAnimation(POSMotion.feedback) {
+                        if next == 0 {
+                            splitSelection.removeValue(forKey: candidate.productId)
+                        } else {
+                            splitSelection[candidate.productId] = next
+                        }
                     }
+                    POSHaptics.light()
                 }
                 .buttonStyle(StepperButtonStyle())
 
@@ -142,18 +153,23 @@ struct SplitPanelView: View {
 
                 Button("+") {
                     let next = min(candidate.qty, selectedQty + 1)
-                    splitSelection[candidate.productId] = next
+                    withAnimation(POSMotion.feedback) {
+                        splitSelection[candidate.productId] = next
+                    }
+                    POSHaptics.light()
                 }
                 .buttonStyle(StepperButtonStyle())
             }
         }
         .padding(POSSpacing.md)
-        .background(POSColor.slate800.opacity(0.58))
+        .background(selectedQty > 0 ? POSColor.indigo500.opacity(0.16) : POSColor.slate800.opacity(0.58))
         .overlay(
             RoundedRectangle(cornerRadius: POSRadius.small)
                 .stroke(POSColor.slate700.opacity(selectedQty > 0 ? 1 : 0.7), lineWidth: selectedQty > 0 ? 2 : 1)
         )
         .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+        .scaleEffect(selectedQty > 0 ? 1.01 : 1.0)
+        .animation(POSMotion.feedback, value: selectedQty)
     }
 
     private var selectedSplitPanel: some View {
@@ -233,20 +249,43 @@ struct SplitPanelView: View {
 
 private struct SplitMethodButtonStyle: ButtonStyle {
     let selected: Bool
+    let namespace: Namespace.ID
 
     func makeBody(configuration: Configuration) -> some View {
-        configuration.label
-            .font(POSTypography.labelLarge)
-            .foregroundStyle(POSColor.slate050)
-            .padding(.vertical, POSSpacing.sm)
-            .frame(maxWidth: .infinity)
-            .background(selected ? POSColor.indigo500.opacity(0.22) : POSColor.slate800.opacity(0.5))
-            .overlay(
-                RoundedRectangle(cornerRadius: POSRadius.small)
-                    .stroke(selected ? POSColor.indigo500 : POSColor.slate700.opacity(0.8), lineWidth: selected ? 2 : 1)
-            )
-            .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
-            .opacity(configuration.isPressed ? 0.85 : 1)
+        ZStack {
+            if selected {
+                RoundedRectangle(cornerRadius: POSRadius.small, style: .continuous)
+                    .fill(
+                        LinearGradient(
+                            colors: [
+                                POSColor.indigo500.opacity(0.82),
+                                POSColor.indigo400.opacity(0.86)
+                            ],
+                            startPoint: .topLeading,
+                            endPoint: .bottomTrailing
+                        )
+                    )
+                    .matchedGeometryEffect(id: "split-method-pill", in: namespace)
+                    .overlay(
+                        RoundedRectangle(cornerRadius: POSRadius.small, style: .continuous)
+                            .stroke(POSColor.slate050.opacity(0.16), lineWidth: 1)
+                    )
+                    .shadow(color: POSColor.indigo500.opacity(0.18), radius: 5, y: 2)
+            }
+
+            configuration.label
+                .font(POSTypography.labelLarge)
+                .foregroundStyle(selected ? Color.white : POSColor.slate050)
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .background(selected ? Color.clear : POSColor.slate800.opacity(0.5))
+        .overlay(
+            RoundedRectangle(cornerRadius: POSRadius.small)
+                .stroke(selected ? Color.clear : POSColor.slate700.opacity(0.8), lineWidth: 1)
+        )
+        .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+        .scaleEffect(configuration.isPressed ? 0.992 : 1)
+        .opacity(configuration.isPressed ? 0.95 : 1)
     }
 }
 

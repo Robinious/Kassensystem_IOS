@@ -1,4 +1,5 @@
 import SwiftUI
+import Foundation
 
 struct TablesScreenView: View {
     @ObservedObject var store: AppStore
@@ -60,9 +61,10 @@ struct TablesScreenView: View {
                                 store.activeWorkTab = .orders
                             },
                             onOpenTransfer: {
-                                withAnimation(.spring(response: 0.38, dampingFraction: 0.84)) {
+                                withAnimation(POSMotion.select) {
                                     store.activeWorkTab = .transfer
                                 }
+                                POSHaptics.selection()
                                 scrollTopNavToTransferOnce = true
                             }
                         )
@@ -143,6 +145,41 @@ struct TablesScreenView: View {
                                 )
                             }
                         )
+
+                    case .voucher:
+                        VoucherPanelView(
+                            tableId: store.selectedTableId,
+                            openGross: openGross,
+                            appliedVouchers: store.currentAppliedVouchers,
+                            voucherCodeInput: store.voucherCodeInput,
+                            isOnline: store.isOnline,
+                            isBusy: store.isBusy,
+                            onVoucherInputChange: { store.setVoucherCodeInput($0) },
+                            onApplyVoucher: { store.applyVoucherCode() },
+                            onRemoveVoucher: { store.removeVoucherCode($0) }
+                        )
+
+                    case .schlemmer:
+                        SchlemmerPanelView(
+                            tableId: store.selectedTableId,
+                            selectedType: store.schlemmerType,
+                            eligibleLines: store.schlemmerEligibleLines,
+                            selection: store.schlemmerSelection,
+                            availableUnits: store.schlemmerAvailableUnits,
+                            requiredFoodUnits: store.schlemmerRequiredFoodUnits,
+                            requiredSelectionCount: store.schlemmerRequiredSelectionCount,
+                            selectedUnits: store.schlemmerSelectedUnits,
+                            previewInFlight: store.schlemmerPreviewInFlight,
+                            showLoadingIndicator: store.schlemmerPreviewShowLoader,
+                            isOnline: store.isOnline,
+                            isBusy: store.isBusy,
+                            onTypeChange: { store.selectSchlemmerType($0) },
+                            onRefresh: { store.refreshSchlemmerPreview() },
+                            onSetSelection: { lineId, qty in
+                                store.setSchlemmerSelection(lineId: lineId, qty: qty)
+                            },
+                            onApply: { store.applySchlemmerSelection() }
+                        )
                     }
                 }
                 .animation(POSMotion.panel, value: store.activeWorkTab)
@@ -153,9 +190,17 @@ struct TablesScreenView: View {
             }
             .onChange(of: store.selectedTableId) { _, _ in
                 splitSelection = [:]
+                if store.activeWorkTab == .schlemmer {
+                    store.refreshSchlemmerPreview()
+                }
             }
             .onChange(of: store.currentOrderCode) { _, _ in
                 splitSelection = [:]
+            }
+            .onChange(of: store.activeWorkTab) { _, tab in
+                if tab == .schlemmer {
+                    store.refreshSchlemmerPreview()
+                }
             }
         }
     }
@@ -168,12 +213,13 @@ struct TablesScreenView: View {
             ScrollViewReader { proxy in
                 ScrollView(.horizontal, showsIndicators: false) {
                     HStack(spacing: POSSpacing.xxs) {
-                        ForEach(WorkTab.allCases, id: \.self) { tab in
+                        ForEach(store.visibleWorkTabs, id: \.self) { tab in
                             let isSelected = tab == store.activeWorkTab
                             Button {
-                                withAnimation(.spring(response: 0.38, dampingFraction: 0.84)) {
+                                withAnimation(POSMotion.select) {
                                     store.activeWorkTab = tab
                                 }
+                                POSHaptics.selection()
                                 let refreshCatalog = (tab == .orders || tab == .tables)
                                 store.requestQuickSync(includeCatalog: refreshCatalog)
                             } label: {
@@ -217,8 +263,10 @@ struct TablesScreenView: View {
                 }
                 .onChange(of: scrollTopNavToTransferOnce) { _, shouldScroll in
                     guard shouldScroll else { return }
-                    withAnimation(.easeInOut(duration: 0.24)) {
-                        proxy.scrollTo(WorkTab.transfer, anchor: .trailing)
+                    withAnimation(POSMotion.panel) {
+                        if store.visibleWorkTabs.contains(.transfer) {
+                            proxy.scrollTo(WorkTab.transfer, anchor: .trailing)
+                        }
                     }
                     DispatchQueue.main.async {
                         scrollTopNavToTransferOnce = false
@@ -310,6 +358,340 @@ struct TablesScreenView: View {
             return SplitCandidateUI(productId: productId, name: items[0].name, qty: qty, price: items[0].price)
         }
         .sorted { $0.name.lowercased() < $1.name.lowercased() }
+    }
+}
+
+private struct VoucherPanelView: View {
+    let tableId: Int
+    let openGross: Double
+    let appliedVouchers: [AppliedVoucherUI]
+    let voucherCodeInput: String
+    let isOnline: Bool
+    let isBusy: Bool
+    let onVoucherInputChange: (String) -> Void
+    let onApplyVoucher: () -> Void
+    let onRemoveVoucher: (String) -> Void
+
+    private var totalVoucherAmount: Double {
+        appliedVouchers.reduce(0) { $0 + max(0, $1.remaining) }
+    }
+
+    private var payableAmount: Double {
+        max(0, openGross - totalVoucherAmount)
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: POSSpacing.md) {
+            Text("Gutschein")
+                .font(POSTypography.titleLarge)
+                .foregroundStyle(POSColor.slate050)
+
+            VStack(alignment: .leading, spacing: POSSpacing.xs) {
+                Text("Tisch \(tableId)")
+                    .font(POSTypography.labelLarge)
+                    .foregroundStyle(POSColor.slate300)
+                Text(String(format: "%.2f EUR", locale: Locale(identifier: "de_DE"), payableAmount))
+                    .font(.system(size: 34, weight: .semibold, design: .default))
+                    .foregroundStyle(POSColor.slate050)
+                Text("Offen: \(String(format: "%.2f EUR", locale: Locale(identifier: "de_DE"), openGross))")
+                    .font(POSTypography.labelLarge)
+                    .foregroundStyle(POSColor.slate300)
+            }
+            .padding(POSSpacing.md)
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .background(POSColor.slate800.opacity(0.52))
+            .clipShape(RoundedRectangle(cornerRadius: POSRadius.innerCard))
+            .overlay(
+                RoundedRectangle(cornerRadius: POSRadius.innerCard)
+                    .stroke(POSColor.slate700.opacity(0.4), lineWidth: 1)
+            )
+
+            if appliedVouchers.isEmpty {
+                Text("Noch kein Gutschein gebucht.")
+                    .font(POSTypography.bodyMedium)
+                    .foregroundStyle(POSColor.slate300)
+            } else {
+                VStack(spacing: POSSpacing.xs) {
+                    ForEach(appliedVouchers) { voucher in
+                        HStack(spacing: POSSpacing.sm) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(voucher.code)
+                                    .font(POSTypography.titleMedium)
+                                    .foregroundStyle(POSColor.slate050)
+                                Text("Verfügbar: \(String(format: "%.2f EUR", locale: Locale(identifier: "de_DE"), voucher.remaining))")
+                                    .font(POSTypography.labelLarge)
+                                    .foregroundStyle(POSColor.emerald500)
+                            }
+                            Spacer()
+                            Button {
+                                onRemoveVoucher(voucher.code)
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 12, weight: .bold))
+                                    .foregroundStyle(POSColor.red500)
+                                    .frame(width: 28, height: 28)
+                                    .background(POSColor.slate900.opacity(0.56))
+                                    .clipShape(Circle())
+                                    .overlay(
+                                        Circle().stroke(POSColor.red500.opacity(0.55), lineWidth: 1)
+                                    )
+                            }
+                            .buttonStyle(.plain)
+                            .disabled(!isOnline || isBusy)
+                        }
+                        .padding(.horizontal, POSSpacing.md)
+                        .padding(.vertical, POSSpacing.sm)
+                        .background(POSColor.emerald500.opacity(0.16))
+                        .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+                        .overlay(
+                            RoundedRectangle(cornerRadius: POSRadius.small)
+                                .stroke(POSColor.emerald500.opacity(0.58), lineWidth: 1)
+                        )
+                    }
+                }
+            }
+
+            HStack(spacing: POSSpacing.sm) {
+                TextField("Gutscheincode", text: Binding(
+                    get: { voucherCodeInput },
+                    set: { onVoucherInputChange($0) }
+                ))
+                .textInputAutocapitalization(.characters)
+                .disableAutocorrection(true)
+                .font(POSTypography.bodyLarge)
+                .foregroundStyle(POSColor.slate050)
+                .padding(.horizontal, POSSpacing.md)
+                .padding(.vertical, POSSpacing.sm)
+                .background(POSColor.slate800.opacity(0.5))
+                .overlay(
+                    RoundedRectangle(cornerRadius: POSRadius.small)
+                        .stroke(POSColor.slate700.opacity(0.5), lineWidth: 1)
+                )
+                .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+                .disabled(!isOnline || isBusy)
+
+                Button("Anwenden") {
+                    POSHaptics.medium()
+                    onApplyVoucher()
+                }
+                .buttonStyle(POSPrimaryButtonStyle())
+                .disabled(!isOnline || isBusy || voucherCodeInput.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+            }
+
+            Spacer()
+        }
+        .padding(POSSpacing.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(POSColor.slate900.opacity(0.95))
+        .clipShape(RoundedRectangle(cornerRadius: POSRadius.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: POSRadius.card)
+                .stroke(POSColor.slate700.opacity(0.3), lineWidth: 1)
+        )
+    }
+}
+
+private struct SchlemmerPanelView: View {
+    let tableId: Int
+    let selectedType: SchlemmerBlockTypeUI
+    let eligibleLines: [SchlemmerEligibleLineUI]
+    let selection: [String: Int]
+    let availableUnits: Int
+    let requiredFoodUnits: Int
+    let requiredSelectionCount: Int
+    let selectedUnits: Int
+    let previewInFlight: Bool
+    let showLoadingIndicator: Bool
+    let isOnline: Bool
+    let isBusy: Bool
+    let onTypeChange: (SchlemmerBlockTypeUI) -> Void
+    let onRefresh: () -> Void
+    let onSetSelection: (String, Int) -> Void
+    let onApply: () -> Void
+
+    private var canApply: Bool {
+        guard isOnline, !isBusy, !previewInFlight else { return false }
+        guard !selection.isEmpty else { return false }
+        if requiredSelectionCount > 0 {
+            return selectedUnits == requiredSelectionCount
+        }
+        return true
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: POSSpacing.md) {
+            HStack {
+                Text("Schlemmer Block")
+                    .font(POSTypography.titleLarge)
+                    .foregroundStyle(POSColor.slate050)
+                Spacer()
+                Button {
+                    onRefresh()
+                } label: {
+                    Image(systemName: "arrow.clockwise")
+                        .font(.system(size: 14, weight: .semibold))
+                        .foregroundStyle(POSColor.slate050)
+                        .frame(width: 30, height: 30)
+                        .background(POSColor.slate800.opacity(0.8))
+                        .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+                }
+                .buttonStyle(.plain)
+                .disabled(previewInFlight || isBusy)
+            }
+
+            HStack(spacing: POSSpacing.sm) {
+                ForEach(SchlemmerBlockTypeUI.allCases) { type in
+                    let selected = selectedType == type
+                    Button {
+                        POSHaptics.selection()
+                        onTypeChange(type)
+                    } label: {
+                        Text(type.rawValue)
+                            .font(POSTypography.labelLarge)
+                            .foregroundStyle(selected ? Color.white : POSColor.slate050)
+                            .frame(maxWidth: .infinity)
+                            .padding(.vertical, POSSpacing.sm)
+                            .background(
+                                RoundedRectangle(cornerRadius: POSRadius.small)
+                                    .fill(selected ? POSColor.indigo500.opacity(0.86) : POSColor.slate800.opacity(0.5))
+                            )
+                            .overlay(
+                                RoundedRectangle(cornerRadius: POSRadius.small)
+                                    .stroke(selected ? POSColor.indigo500.opacity(0.95) : POSColor.slate700.opacity(0.45), lineWidth: selected ? 1.5 : 1)
+                            )
+                    }
+                    .buttonStyle(.plain)
+                    .disabled(previewInFlight || isBusy)
+                }
+            }
+
+            VStack(alignment: .leading, spacing: POSSpacing.xxs) {
+                Text("Tisch \(tableId)")
+                    .font(POSTypography.labelLarge)
+                    .foregroundStyle(POSColor.slate300)
+                Text("Verfügbar: \(availableUnits) • Mindestmenge: \(requiredFoodUnits)")
+                    .font(POSTypography.bodyMedium)
+                    .foregroundStyle(POSColor.slate050)
+                if requiredSelectionCount > 0 {
+                    Text("Auswahl: \(selectedUnits)/\(requiredSelectionCount)")
+                        .font(POSTypography.labelLarge)
+                        .foregroundStyle(selectedUnits == requiredSelectionCount ? POSColor.emerald500 : POSColor.amber500)
+                }
+            }
+            .padding(POSSpacing.md)
+            .background(POSColor.slate800.opacity(0.45))
+            .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+            .overlay(
+                RoundedRectangle(cornerRadius: POSRadius.small)
+                    .stroke(POSColor.slate700.opacity(0.4), lineWidth: 1)
+            )
+
+            if previewInFlight && showLoadingIndicator {
+                HStack(spacing: POSSpacing.sm) {
+                    ProgressView()
+                        .tint(POSColor.indigo500)
+                    Text("Schlemmer Vorschau wird geladen...")
+                        .font(POSTypography.bodyMedium)
+                        .foregroundStyle(POSColor.slate300)
+                }
+            } else if eligibleLines.isEmpty {
+                Spacer()
+                Text("Keine berechtigten Speisen gefunden.")
+                    .font(POSTypography.bodyMedium)
+                    .foregroundStyle(POSColor.slate300)
+                    .frame(maxWidth: .infinity, alignment: .center)
+                Spacer()
+            } else {
+                ScrollView {
+                    VStack(spacing: POSSpacing.xs) {
+                        ForEach(eligibleLines) { line in
+                            let selectedQty = selection[line.lineId] ?? 0
+                            HStack(spacing: POSSpacing.sm) {
+                                VStack(alignment: .leading, spacing: 2) {
+                                    Text("\(line.qty)x \(line.name)")
+                                        .font(POSTypography.titleMedium)
+                                        .foregroundStyle(POSColor.slate050)
+                                        .lineLimit(2)
+                                    HStack(spacing: POSSpacing.xs) {
+                                        if line.isKidsMeal {
+                                            Text("Kindergericht")
+                                                .font(POSTypography.labelMedium)
+                                                .foregroundStyle(Color.adaptive(darkHex: 0xD8FFEA, lightHex: 0x121A27))
+                                                .padding(.horizontal, POSSpacing.sm)
+                                                .padding(.vertical, 2)
+                                                .background(POSColor.emerald500.opacity(0.28))
+                                                .clipShape(Capsule())
+                                        }
+                                        Text("Ausgewählt \(selectedQty)/\(line.qty)")
+                                            .font(POSTypography.labelLarge)
+                                            .foregroundStyle(POSColor.slate300)
+                                    }
+                                }
+                                Spacer()
+                                Text(String(format: "%.2f EUR", locale: Locale(identifier: "de_DE"), line.unitPrice))
+                                    .font(POSTypography.bodyLarge)
+                                    .foregroundStyle(POSColor.slate050)
+                                HStack(spacing: POSSpacing.xs) {
+                                    Button {
+                                        onSetSelection(line.lineId, max(0, selectedQty - 1))
+                                    } label: {
+                                        Image(systemName: "minus")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(POSColor.slate050)
+                                            .frame(width: 28, height: 28)
+                                            .background(POSColor.slate900.opacity(0.65))
+                                            .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(previewInFlight || isBusy)
+
+                                    Text("\(selectedQty)")
+                                        .font(POSTypography.titleMedium)
+                                        .foregroundStyle(POSColor.slate050)
+                                        .frame(width: 22)
+
+                                    Button {
+                                        onSetSelection(line.lineId, min(line.qty, selectedQty + 1))
+                                    } label: {
+                                        Image(systemName: "plus")
+                                            .font(.system(size: 12, weight: .bold))
+                                            .foregroundStyle(POSColor.slate050)
+                                            .frame(width: 28, height: 28)
+                                            .background(POSColor.slate900.opacity(0.65))
+                                            .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+                                    }
+                                    .buttonStyle(.plain)
+                                    .disabled(previewInFlight || isBusy)
+                                }
+                            }
+                            .padding(.horizontal, POSSpacing.md)
+                            .padding(.vertical, POSSpacing.sm)
+                            .background((selectedQty > 0 ? POSColor.indigo500.opacity(0.22) : POSColor.slate800.opacity(0.58)))
+                            .clipShape(RoundedRectangle(cornerRadius: POSRadius.small))
+                            .overlay(
+                                RoundedRectangle(cornerRadius: POSRadius.small)
+                                    .stroke(selectedQty > 0 ? POSColor.indigo500.opacity(0.82) : POSColor.slate700.opacity(0.35), lineWidth: 1)
+                            )
+                        }
+                    }
+                }
+            }
+
+            Button("Schlemmer Block anwenden") {
+                POSHaptics.medium()
+                onApply()
+            }
+            .buttonStyle(POSPrimaryButtonStyle())
+            .disabled(!canApply)
+        }
+        .padding(POSSpacing.lg)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(POSColor.slate900.opacity(0.95))
+        .clipShape(RoundedRectangle(cornerRadius: POSRadius.card))
+        .overlay(
+            RoundedRectangle(cornerRadius: POSRadius.card)
+                .stroke(POSColor.slate700.opacity(0.3), lineWidth: 1)
+        )
     }
 }
 
